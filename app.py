@@ -1,28 +1,26 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import re
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from utils.recommender import EnhancedHybridRecommender, CollaborativeRecommender
 import plotly.express as px
 from streamlit_option_menu import option_menu
 import os
-from utils.recommender import EnhancedHybridRecommender, CollaborativeRecommender
-
-# Add this debugging code at the top of your app.py, right after your imports
-# and before the page setup
-import os
 import traceback
 import sys
-import os
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import re
+
 # Force UTF-8 encoding for the terminal
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 
+# Debug file existence
 def debug_file_existence():
     """Check if all required files exist"""
     required_files = [
         "products_preprocessed.csv",
+        "filtered_skincare_products.csv",
         "collaborative_training_data.csv",
         "models/product_embeddings.pkl",
         "models/surprise_svd_model.pkl",
@@ -44,66 +42,15 @@ def debug_file_existence():
 # Run the debug function
 debug_file_existence()
 
-# Modified load_recommenders function with detailed debugging
-@st.cache_resource
-@st.cache_resource
-def load_recommenders():
-    print("Starting to load recommenders...")
-    
-    hybrid_rec = None
-    collab_rec = None
-    
-    # Try to load hybrid recommender
-    try:
-        print("Loading hybrid recommender...")
-        hybrid_rec = EnhancedHybridRecommender(
-            train_path="collaborative_training_data.csv",
-            products_path="products_preprocessed.csv",
-            content_model_path="models/product_embeddings.pkl",
-            svd_model_path="models/surprise_svd_model.pkl"
-        )
-        print("✅ Hybrid recommender loaded successfully")
-    except Exception as e:
-        print(f"[ERROR] Error loading hybrid recommender: {e}")
-        traceback.print_exc()
-    
-    # Try to load collaborative recommender
-    try:
-        print("Loading collaborative recommender...")
-        collab_rec = CollaborativeRecommender(r"c:\Users\lucas\Downloads\AI_Assignment\AI-Assignment\collaborative_training_data.csv")
-        print(f"CollaborativeRecommender df shape: {collab_rec.df.shape if collab_rec.df is not None else 'None'}")
-        print("✅ Collaborative recommender loaded successfully")
-    except Exception as e:
-        print(f"[ERROR] Error loading collaborative recommender: {e}")
-        traceback.print_exc()
-    
-    return hybrid_rec, collab_rec
-
-# Replace your existing load_recommenders call with this
-hybrid_rec, collab_rec = load_recommenders()
-
-# Add status display in sidebar
-# with st.sidebar:
-#     st.divider()
-#     st.subheader("System Status")
-#     st.write(f"Hybrid Recommender: {'✅' if hybrid_rec else '❌'}")
-#     st.write(f"Collaborative Recommender: {'✅' if collab_rec else '❌'}")
-    
-#     if collab_rec and collab_rec.df is not None:
-#         st.write(f"Training Records: {len(collab_rec.df)}")
-#         st.write(f"Unique Users: {collab_rec.df['author_id'].nunique()}")
-#     else:
-#         st.write("Training Data: ❌")
-
-# Page setup
+# 页面设置
 st.set_page_config(
     page_title="Skincare Recommendation System",
     page_icon="🌸",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# Initialize session state
+# 初始化session state
 if 'current_page' not in st.session_state:
     st.session_state.current_page = 'home'
 if 'selected_model' not in st.session_state:
@@ -112,29 +59,92 @@ if 'selected_category' not in st.session_state:
     st.session_state.selected_category = None
 if 'skin_data' not in st.session_state:
     st.session_state.skin_data = {}
+if 'selected_product' not in st.session_state:
+    st.session_state.selected_product = None
+if 'selected_product_category' not in st.session_state:
+    st.session_state.selected_product_category = None
 
-# Load product data and TF-IDF
+# 加载产品数据
 @st.cache_data(show_spinner=True)
-def load_products(path="products_preprocessed.csv"):
-    df = pd.read_csv(path)
-    for c in ["price_usd", "rating", "reviews"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["skin_concern"] = df.get("skin_concern", "").fillna("").astype(str)
-    df["skin_type"] = df.get("skin_type", "").fillna("").astype(str)
-    df["product_type"] = df.get("product_type", "").fillna("").astype(str)
-    return df
+def load_products(path="products_preprocessed.csv", extra_path="filtered_skincare_products.csv"):
+    try:
+        df = pd.read_csv(path)
+        # Ensure required columns exist
+        for c in ["price_usd", "rating", "reviews"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+        df["product_type"] = df.get("tertiary_category", "").fillna("").astype(str)
+        df["skin_concern"] = df.get("skin_concern", "").fillna("").astype(str)
+        df["skin_type"] = df.get("skin_type", "").fillna("").astype(str)
+        # Ensure product_content exists
+        if "product_content" not in df.columns:
+            df["product_content"] = (df["product_type"] + " " + 
+                                   df["skin_type"] + " " + 
+                                   df["skin_concern"]).str.strip()
+        
+        # Load filtered_skincare_products.csv
+        try:
+            df_extra = pd.read_csv(extra_path)
+            # Select relevant columns
+            df_extra = df_extra[["product_id", "size", "highlights", "ingredient"]].copy()
+            # Rename 'ingredient' to 'ingredients' if needed
+            if "ingredient" in df_extra.columns:
+                df_extra = df_extra.rename(columns={"ingredient": "ingredients"})
+            # Merge with main DataFrame
+            df = df.merge(df_extra, on="product_id", how="left")
+            # Fill missing values for new columns
+            for c in ["size", "highlights", "ingredients"]:
+                df[c] = df[c].fillna("Not specified")
+        except Exception as e:
+            print(f"Error loading filtered_skincare_products.csv: {e}")
+            # Add fallback columns if merge fails
+            for c in ["size", "highlights", "ingredients"]:
+                df[c] = "Not specified"
+        
+        print("✅ Product data loaded successfully")
+        return df
+    except Exception as e:
+        print(f"Error loading products: {e}")
+        return pd.DataFrame({
+            'product_id': ['P001', 'P002', 'P003', 'P004', 'P005', 'P006'],
+            'product_name': ['Moisturizing Cream', 'Cleansing Gel', 'Anti-Aging Serum', 
+                           'Sunscreen SPF 50', 'Hydrating Toner', 'Acne Treatment'],
+            'brand_name': ['Brand A', 'Brand B', 'Brand C', 'Brand D', 'Brand E', 'Brand F'],
+            'tertiary_category': ['Moisturizers', 'Cleansers', 'Serums', 
+                                'Sunscreens', 'Toners', 'Treatments'],
+            'product_type': ['Moisturizers', 'Cleansers', 'Serums', 
+                           'Sunscreens', 'Toners', 'Treatments'],
+            'skin_type': ['', '', '', '', '', ''],
+            'skin_concern': ['', '', '', '', '', ''],
+            'product_content': ['Moisturizers', 'Cleansers', 'Serums', 
+                              'Sunscreens', 'Toners', 'Treatments'],
+            'price_usd': [25.99, 18.50, 32.75, 22.00, 15.99, 28.50],
+            'size': ['Not specified'] * 6,
+            'highlights': ['Not specified'] * 6,
+            'ingredients': ['Not specified'] * 6
+        })
 
+# 构建TF-IDF向量化器和矩阵
 @st.cache_resource(show_spinner=True)
-def build_vectorizer_and_matrix(product_text: pd.Series):
-    vectorizer = TfidfVectorizer(stop_words="english")
-    tfidf_matrix = vectorizer.fit_transform(product_text.fillna("").astype(str))
-    return vectorizer, tfidf_matrix
+def build_vectorizer_and_matrix(df: pd.DataFrame):
+    try:
+        # Use product_content for TF-IDF
+        text_series = df.get("product_content", 
+                           df.get("product_type", "") + " " + 
+                           df.get("skin_type", "") + " " + 
+                           df.get("skin_concern", "")).str.strip()
+        vectorizer = TfidfVectorizer(stop_words="english")
+        tfidf_matrix = vectorizer.fit_transform(text_series.fillna(""))
+        print("✅ TF-IDF vectorizer and matrix built successfully")
+        return vectorizer, tfidf_matrix
+    except Exception as e:
+        print(f"Error building TF-IDF matrix: {e}")
+        raise
 
-df = load_products("products_preprocessed.csv")
-vectorizer, tfidf_matrix = build_vectorizer_and_matrix(df["product_content"])
+products_df = load_products()
+vectorizer, tfidf_matrix = build_vectorizer_and_matrix(products_df)
 
-# Recommender logic from zw_app.py
+# Content-based recommender logic with tertiary_category filter
 def contentbased_recommender(
     product_type=None,
     skin_type=None,
@@ -151,6 +161,7 @@ def contentbased_recommender(
         return {t.strip().lower() for t in re.split(r"[;,/|]", str(x)) if t.strip()}
 
     req_type = str(product_type).strip().lower() if product_type else None
+    req_category = str(st.session_state.selected_product_category).strip().lower() if st.session_state.selected_product_category else None
     req_skin = str(skin_type).strip().lower() if skin_type else None
     req_concern = _to_set(skin_concern)
 
@@ -163,14 +174,19 @@ def contentbased_recommender(
     qv = vectorizer.transform([profile_text])
     sims = cosine_similarity(qv, tfidf_matrix).ravel()
 
-    price_col = pd.to_numeric(df.get("price_usd", np.nan), errors="coerce")
-    rating_col = pd.to_numeric(df.get("rating", np.nan), errors="coerce").fillna(0.0)
-    reviews_col = pd.to_numeric(df.get("reviews", 0), errors="coerce").fillna(0).astype(int)
+    price_col = pd.to_numeric(products_df.get("price_usd", np.nan), errors="coerce")
+    rating_col = pd.to_numeric(products_df.get("rating", np.nan), errors="coerce").fillna(0.0)
+    reviews_col = pd.to_numeric(products_df.get("reviews", 0), errors="coerce").fillna(0).astype(int)
 
     rows = []
     for i, sim in enumerate(sims):
-        row = df.iloc[i]
+        row = products_df.iloc[i]
 
+        # Filter by tertiary_category if selected
+        if req_category and str(row.get("tertiary_category", "")).strip().lower() != req_category:
+            continue
+
+        # Filter by product_type (already mapped from tertiary_category)
         if req_type and str(row.get("product_type", "")).strip().lower() != req_type:
             continue
 
@@ -196,12 +212,16 @@ def contentbased_recommender(
             "product_name": row.get("product_name", ""),
             "brand_name": row.get("brand_name", ""),
             "product_type": row.get("product_type", ""),
+            "tertiary_category": row.get("tertiary_category", ""),
             "skin_type": row.get("skin_type", ""),
             "skin_concern": row.get("skin_concern", ""),
             "price_usd": row.get("price_usd", ""),
             "rating": rating_col.iat[i],
             "reviews": reviews_col.iat[i],
-            "similarity": float(sim)
+            "similarity": float(sim),
+            "size": row.get("size", "Not specified"),
+            "highlights": row.get("highlights", "Not specified"),
+            "ingredients": row.get("ingredients", "Not specified")
         })
 
     out = pd.DataFrame(rows)
@@ -216,52 +236,7 @@ def contentbased_recommender(
     out["similarity"] = out["similarity"].round(4)
     return out
 
-# Dynamically extract concern options
-def all_concerns_unique(df):
-    s = df["skin_concern"].fillna("").astype(str)
-    uniq = set()
-    for txt in s:
-        for t in re.split(r"[;,/|]", txt):
-            t = t.strip().lower()
-            if t:
-                uniq.add(t)
-    return sorted(uniq)
-
-# Helper functions
-def display_recommendation(index, product, rating, similarity):
-    with st.container():
-        col1, col2, col3 = st.columns([3, 1, 1])
-        
-        with col1:
-            st.subheader(f"{index}. {product.get('product_name', 'Product')}")
-            st.write(f"**Brand:** {product.get('brand_name', 'Unknown')}")
-            st.write(f"**Type:** {product.get('product_type', 'Unknown') if 'product_type' in product else product.get('tertiary_category', 'Unknown')}")
-            st.write(f"**Skin Type:** {product.get('skin_type', 'N/A')}")
-            st.write(f"**Category:** {product.get('secondary_category', 'N/A')}")
-        
-        with col2:
-            st.metric("Rating", f"{rating:.1f}/5")
-            match_percent = round(min(100, max(0, similarity * 100)))
-            st.progress(match_percent / 100, text=f"{match_percent}% match")
-            st.write(f"**Price:** ${product.get('price_usd', 0):.2f}")
-        
-        with col3:
-            st.write(f"**Predicted Rating:** {product.get('predicted_rating', 'N/A')}")
-            if st.button("View Details", key=f"btn_{index}"):
-                st.write(f"**Product ID:** {product.get('product_id', 'N/A')}")
-        
-        st.divider()
-
-def display_product_card(product, col):
-    with col:
-        card = st.container(border=True)
-        with card:
-            st.subheader(product['product_name'])
-            st.write(f"**Brand:** {product['brand_name']}")
-            st.write(f"**Category:** {product['tertiary_category']}")
-            st.write(f"**Price:** ${product['price_usd']}")
-
-# Initialize recommenders
+# 初始化推荐系统
 @st.cache_resource
 def load_recommenders():
     print("Starting to load recommenders...")
@@ -269,7 +244,6 @@ def load_recommenders():
     hybrid_rec = None
     collab_rec = None
     
-    # Try to load hybrid recommender
     try:
         print("Loading hybrid recommender...")
         hybrid_rec = EnhancedHybridRecommender(
@@ -283,7 +257,6 @@ def load_recommenders():
         print(f"[ERROR] Error loading hybrid recommender: {e}")
         traceback.print_exc()
     
-    # Try to load collaborative recommender
     try:
         print("Loading collaborative recommender...")
         collab_rec = CollaborativeRecommender("collaborative_training_data.csv")
@@ -295,29 +268,95 @@ def load_recommenders():
     
     return hybrid_rec, collab_rec
 
-# Sidebar navigation
-with st.sidebar:
-    st.image("https://images.unsplash.com/photo-1596462502278-27bfdc403348?w=100", width=80)
-    st.title("🌸 Skincare Recommender")
-    
-    if st.button("🏠 Home", use_container_width=True):
-        st.session_state.current_page = 'home'
-        st.rerun()
-    
-    if st.button("💫 Get Recommendations", use_container_width=True):
-        st.session_state.current_page = 'select_approach'
-        st.rerun()
-    
-    if st.button("ℹ️ About", use_container_width=True):
-        st.session_state.current_page = 'about'
-        st.rerun()
-    
-    st.divider()
-    st.caption("Quick Navigation")
+hybrid_rec, collab_rec = load_recommenders()
 
-# Page routing
+# 动态提取所有唯一皮肤问题
+def all_concerns_unique(df):
+    s = df["skin_concern"].fillna("").astype(str)
+    uniq = set()
+    for txt in s:
+        for t in re.split(r"[;,/|]", txt):
+            t = t.strip().lower()
+            if t:
+                uniq.add(t)
+    return sorted(uniq)
+
+# 辅助函数定义
+def display_recommendation(index, product, rating, similarity=None):
+    with st.container():
+        col1, col2, col3 = st.columns([3, 1, 1])
+        
+        with col1:
+            st.subheader(f"{index}. {product.get('product_name', 'Unknown Product')}")
+            st.write(f"**Brand:** {product.get('brand_name', 'Unknown')}")
+            st.write(f"**Category:** {product.get('tertiary_category', 'Unknown')}")
+            st.write(f"**Product ID:** {product.get('product_id', 'N/A')}")
+        
+        with col2:
+            st.metric("Rating" if st.session_state.get('selected_model') == 'content' else "Predicted Rating", 
+                     f"{rating:.1f}/5")
+            if similarity is not None:
+                match_percent = round(min(100, max(0, similarity * 100)))
+                st.progress(match_percent / 100, text=f"{match_percent}% match")
+            st.write(f"**Price:** ${product.get('price_usd', 0):.2f}")
+        
+        with col3:
+            if st.button("Details", key=f"rec_btn_{index}"):
+                st.write("**Full Product Info:**")
+                st.write(f"**Skin Concern:** {product.get('skin_concern', 'Not specified')}")
+                st.write(f"**Reviews:** {product.get('reviews', 'Not specified')}")
+                st.json(product)
+        
+        st.divider()
+
+def display_product_card(product, col):
+    with col:
+        card = st.container(border=True)
+        with card:
+            st.subheader(product['product_name'])
+            st.write(f"**Brand:** {product['brand_name']}")
+            st.write(f"**Category:** {product['tertiary_category']}")
+            st.write(f"**Price:** ${product['price_usd']}")
+            
+            if st.button("Select & Get Recommendations", key=f"select_{product['product_id']}", 
+                        use_container_width=True):
+                st.session_state.selected_product = product['product_id']
+                st.session_state.selected_product_category = product['tertiary_category']
+                st.session_state.current_page = 'skin analysis'
+                st.rerun()
+
+# CSS for full-width layout and reduced padding
+st.markdown("""
+    <style>
+    .main .block-container {
+        padding-left: 0 !important;
+        padding-right: 0 !important;
+        max-width: 100% !important;
+    }
+    .stContainer {
+        width: 100% !important;
+        padding: 5px !important;
+        margin: 0 !important;
+    }
+    .stButton>button {
+        width: 100% !important;
+        margin: 2px 0 !important;
+    }
+    .stApp {
+        max-width: 100% !important;
+        margin: 0 !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# 页面路由逻辑
+# Navigation bar at the top of each page
+st.image("https://images.unsplash.com/photo-1596462502278-27bfdc403348?w=100", width=80)
+st.title("🌸 Skincare Recommender")
+st.divider()
+
 if st.session_state.current_page == 'home':
-    st.header("🌸 Discover Your Perfect Skincare")
+    st.header("Discover Your Perfect Skincare")
     st.subheader("Browse our curated collection or get personalized recommendations")
     
     col1, col2 = st.columns([2, 1])
@@ -325,9 +364,9 @@ if st.session_state.current_page == 'home':
         search_query = st.text_input("🔍 Search products", placeholder="Enter product name or brand")
     with col2:
         selected_category = st.selectbox("Filter by category", 
-                                       ["All"] + sorted(df['tertiary_category'].unique()))
+                                       ["All"] + list(products_df['tertiary_category'].unique()))
     
-    filtered_products = df.copy()
+    filtered_products = products_df.copy()
     if search_query:
         filtered_products = filtered_products[
             filtered_products['product_name'].str.contains(search_query, case=False, na=False) |
@@ -349,11 +388,71 @@ if st.session_state.current_page == 'home':
     st.write("### Not sure what to choose?")
     if st.button("✨ Get Personalized Recommendations Based on Your Skin Needs", 
                 use_container_width=True, type="primary"):
-        st.session_state.current_page = 'select_approach'
+        st.session_state.current_page = 'skin analysis'
+        st.session_state.selected_product = None
+        st.session_state.selected_product_category = None
         st.rerun()
 
-elif st.session_state.current_page == 'select_approach':
+elif st.session_state.current_page == 'skin analysis':
+    st.header("Tell Us About Your Skin")
+    
+    if st.button("← Back to Products"):
+        st.session_state.current_page = 'home'
+        st.session_state.selected_product = None
+        st.session_state.selected_product_category = None
+        st.rerun()
+    
+    if st.session_state.selected_product:
+        product_info = products_df[products_df['product_id'] == st.session_state.selected_product]
+        if not product_info.empty:
+            product_info = product_info.iloc[0]
+            st.info(f"**Selected Product:** {product_info['product_name']} by {product_info['brand_name']} (Category: {st.session_state.selected_product_category})")
+    
+    with st.form("skin_analysis_form"):
+        user_id = st.text_input("User ID", placeholder="Enter your user ID (optional)", 
+                               help="Optional for content-based recommendations, required for collaborative")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            skin_type = st.selectbox("Skin Type", ["(any)", "Dry", "Oily", "Combination", "Normal", "Sensitive"],
+                                   help="Select your primary skin type (optional)")
+        with col2:
+            budget = st.selectbox("Budget Preference", ["(any)", "Under $25", "$25-$50", "$50-$100", "Over $100", "No budget limit"],
+                                help="Your preferred price range (optional)")
+        
+        concerns = st.multiselect(
+            "Main Skin Concerns",
+            all_concerns_unique(products_df),
+            help="Select all that apply to you (optional)"
+        )
+        
+        concern_match = st.radio("Concern Match", ["all", "any"], index=1, 
+                                help="Match all concerns or any concern (optional)")
+        
+        num_products = st.slider("Number of Recommendations", 1, 10, 5,
+                               help="How many products would you like to see?")
+        
+        submitted = st.form_submit_button("🎯 Get Personalized Recommendations", type="primary")
+        
+        if submitted:
+            st.session_state.skin_data = {
+                'user_id': user_id if user_id else None,
+                'skin_type': None if skin_type == "(any)" else skin_type,
+                'concerns': concerns if concerns else None,
+                'budget': None if budget == "(any)" else budget,
+                'num_products': num_products,
+                'product_type': st.session_state.selected_product_category,  # Use selected category
+                'concern_match': concern_match
+            }
+            st.session_state.current_page = 'select approach'
+            st.rerun()
+
+elif st.session_state.current_page == 'select approach':
     st.header("Choose Your Recommendation Style")
+    
+    if st.button("← Back to Skin Analysis"):
+        st.session_state.current_page = 'skin analysis'
+        st.rerun()
     
     st.write("How would you like us to find your perfect skincare match?")
     
@@ -362,21 +461,21 @@ elif st.session_state.current_page == 'select_approach':
     with col1:
         if st.button("🤖 Smart Matching", use_container_width=True, help="Based on product ingredients and features"):
             st.session_state.selected_model = 'content'
-            st.session_state.current_page = 'input_form'
+            st.session_state.current_page = 'recommendations'
             st.rerun()
         st.caption("AI-powered analysis of product ingredients and features")
     
     with col2:
         if st.button("👥 Community Wisdom", use_container_width=True, help="From users with similar skin profiles"):
             st.session_state.selected_model = 'collab' 
-            st.session_state.current_page = 'input_form'
+            st.session_state.current_page = 'recommendations'
             st.rerun()
         st.caption("Recommendations from users with similar skin concerns")
     
     with col3:
         if st.button("🌟 Best of Both", use_container_width=True, help="Combined AI and community insights"):
             st.session_state.selected_model = 'hybrid'
-            st.session_state.current_page = 'input_form'
+            st.session_state.current_page = 'recommendations'
             st.rerun()
         st.caption("Advanced AI combining both approaches for optimal results")
     
@@ -395,101 +494,48 @@ elif st.session_state.current_page == 'select_approach':
         accurate and personalized recommendations.
         """)
 
-elif st.session_state.current_page == 'input_form':
-    model_type = st.session_state.selected_model
-    st.header(f"Enter Details for {model_type.capitalize()} Recommendations")
-    
-    if st.button("← Back to Selection"):
-        st.session_state.current_page = 'select_approach'
-        st.rerun()
-    
-    with st.form("input_form"):
-        user_id = None
-        skin_type = None
-        product_type = None
-        concerns = None
-        concern_match = None
-        budget = None
-        
-        if model_type in ['collab', 'hybrid']:
-            user_id = st.text_input("User ID", placeholder="Enter your user ID", help="Required for personalized recommendations")
-        
-        if model_type in ['content', 'hybrid']:
-            col1, col2 = st.columns(2)
-            with col1:
-                skin_type = st.selectbox("Skin Type", ["(any)"] + ["Dry", "Oily", "Combination", "Normal", "Sensitive"],
-                                       help="Select your primary skin type")
-                product_type = st.selectbox("Product Type", ["(any)"] + sorted(df['product_type'].unique()),
-                                           help="Select a product category (optional)")
-            with col2:
-                budget = st.selectbox("Budget Preference", ["(any)", "Under $25", "$25-$50", "$50-$100", "Over $100", "No budget limit"],
-                                    help="Your preferred price range")
-            
-            concerns = st.multiselect(
-                "Main Skin Concerns",
-                all_concerns_unique(df),
-                help="Select all that apply to you"
-            )
-            
-            concern_match = st.radio("Concern Match", ["all", "any"], index=1, help="Match all concerns or any concern")
-        
-        num_products = st.slider("Number of Recommendations", 1, 50, 5,
-                               help="How many products would you like to see?")
-        
-        submitted = st.form_submit_button("🎯 Get Personalized Recommendations", type="primary")
-        
-        if submitted:
-            st.session_state.skin_data = {
-                'user_id': user_id,
-                'skin_type': None if skin_type == "(any)" else skin_type,
-                'concerns': concerns if concerns else None,
-                'budget': None if budget == "(any)" else budget,
-                'num_products': num_products,
-                'product_type': None if product_type == "(any)" else product_type,
-                'concern_match': concern_match
-            }
-            st.session_state.current_page = 'recommendations'
-            st.rerun()
-
 elif st.session_state.current_page == 'recommendations':
     st.header("Your Personalized Skincare Recommendations")
     
     if not st.session_state.skin_data:
-        st.warning("Please complete the input form first")
-        st.session_state.current_page = 'input_form'
+        st.warning("Please complete the skin analysis first")
+        st.session_state.current_page = 'skin analysis'
         st.rerun()
     
     skin_data = st.session_state.skin_data
     model_type = st.session_state.selected_model
     
-    with st.expander("Your Input Profile"):
+    # 显示用户输入
+    with st.expander("Your Skin Profile"):
         col1, col2, col3 = st.columns(3)
         with col1:
-            if 'user_id' in skin_data and skin_data['user_id']:
+            if skin_data.get('user_id'):
                 st.write(f"**User ID:** {skin_data['user_id']}")
-            if 'skin_type' in skin_data and skin_data['skin_type']:
+            if skin_data.get('skin_type'):
                 st.write(f"**Skin Type:** {skin_data['skin_type']}")
-            if 'product_type' in skin_data and skin_data['product_type']:
-                st.write(f"**Product Type:** {skin_data['product_type'] or 'Any'}")
+            if skin_data.get('product_type'):
+                st.write(f"**Product Category:** {skin_data['product_type']}")
         with col2:
-            if 'budget' in skin_data and skin_data['budget']:
+            if skin_data.get('budget'):
                 st.write(f"**Budget:** {skin_data['budget']}")
             st.write(f"**Number of Products:** {skin_data['num_products']}")
-            if 'concern_match' in skin_data and skin_data['concern_match']:
+            if skin_data.get('concern_match'):
                 st.write(f"**Concern Match:** {skin_data['concern_match'].capitalize()}")
         with col3:
-            if 'concerns' in skin_data and skin_data['concerns']:
+            if skin_data.get('concerns'):
                 st.write(f"**Concerns:** {', '.join(skin_data['concerns']) if skin_data['concerns'] else 'None'}")
             st.write(f"**Model:** {model_type.capitalize()}")
     
+    # 获取和显示推荐
     st.subheader("Recommended For You")
     
     if model_type == 'hybrid' and hybrid_rec:
         skin_profile_data = {
             'user_id': skin_data['user_id'],
-            'skin_type': skin_data.get('skin_type'),
-            'concerns': skin_data.get('concerns'),
-            'budget': skin_data.get('budget')
+            'skin_type': skin_data['skin_type'],
+            'concerns': skin_data['concerns'],
+            'budget': skin_data['budget'],
+            'concern_match': skin_data['concern_match']
         }
         
         try:
@@ -508,12 +554,20 @@ elif st.session_state.current_page == 'recommendations':
                 
                 if recommendations:
                     for i, (product_id, rating, match_percent) in enumerate(recommendations, 1):
-                        product_info = df[df['product_id'].astype(str) == product_id]
+                        product_info = products_df[products_df['product_id'].astype(str) == product_id]
                         if not product_info.empty:
                             product_info = product_info.iloc[0]
-                            display_recommendation(i, product_info, rating, match_percent / 100)
+                            product_dict = product_info.to_dict()
+                            # Ensure additional fields are included
+                            product_dict.update({
+                                'size': product_info.get('size', 'Not specified'),
+                                'highlights': product_info.get('highlights', 'Not specified'),
+                                'ingredients': product_info.get('ingredients', 'Not specified')
+                            })
+                            display_recommendation(i, product_dict, rating, match_percent / 100)
                 else:
-                    st.warning("No recommendations found. Try adjusting your skin profile or broadening your filters.")
+                    st.warning("No recommendations found. Try adjusting your skin profile.")
+                    
             except Exception as e:
                 st.error(f"Error generating recommendations: {e}")
                 recommendations = hybrid_rec.generate_recommendations(
@@ -524,8 +578,6 @@ elif st.session_state.current_page == 'recommendations':
     elif model_type == 'content':
         with st.spinner("🔍 Finding products that match your skin needs..."):
             try:
-                progress = st.progress(0)
-                st.write(f"Generating recommendations for: {skin_data}")
                 max_price = None
                 if skin_data['budget'] == "Under $25":
                     max_price = 25
@@ -546,31 +598,29 @@ elif st.session_state.current_page == 'recommendations':
                     max_price=max_price,
                     n=skin_data['num_products']
                 )
-                progress.progress(100)
                 
                 if not recommendations.empty:
                     for i, rec in enumerate(recommendations.to_dict('records'), 1):
                         display_recommendation(i, rec, rec['rating'], rec['similarity'])
                     csv = recommendations.to_csv(index=False).encode("utf-8")
-                    st.download_button("Download results (CSV)", data=csv, file_name="skincare_recommendations.csv", mime="text/csv")
+                    st.download_button(
+                        "Download Recommendations (CSV)", 
+                        data=csv, 
+                        file_name="content_recommendations.csv", 
+                        mime="text/csv"
+                    )
                 else:
-                    st.warning("No recommendations found. Try selecting fewer concerns, choosing 'any' for concern match, or leaving product type, skin type, and budget as '(any)'.")
+                    st.warning("No recommendations found. Try selecting fewer concerns, choosing 'any' for concern match, or leaving skin type and budget as '(any)'.")
             except Exception as e:
                 st.error(f"Error generating content-based recommendations: {e}")
+                with st.expander("Full Error Details"):
+                    st.code(str(e))
+                    st.code(traceback.format_exc())
     
-    # Replace your collaborative filtering section in app.py with this:
     elif model_type == 'collab':
-        # st.subheader("Community-Based Recommendations")
-        
-        # Check if collaborative recommender is available
         if not collab_rec:
-            st.error("Collaborative Recommender is not available. Please check the system status in the sidebar.")
+            st.error("Collaborative Recommender is not available. Please check the system status.")
             st.stop()
-        
-        # # Show system information
-        # with st.expander("System Information"):
-        #     system_info = collab_rec.get_system_info()
-        #     st.json(system_info)
         
         with st.spinner("Finding community favorites for your skin type..."):
             if not skin_data.get('user_id'):
@@ -579,34 +629,22 @@ elif st.session_state.current_page == 'recommendations':
                 user_id = str(skin_data['user_id']).strip()
                 st.info(f"Searching for recommendations for user: '{user_id}'")
                 
-                # Show debugging information
-                # with st.expander("Debug Information (Click to expand)"):
-                #     st.write(f"**Input User ID:** `{user_id}` (type: {type(user_id)})")
-                    
-                #     # Check user existence
-                #     user_exists = collab_rec.check_user_exists(user_id)
-                #     st.write(f"**User exists in training data:** {user_exists}")
-                    
-                #     # Show sample user IDs
-                #     sample_users = collab_rec.get_available_users(20)
-                #     st.write(f"**Sample available user IDs ({len(sample_users)} shown):**")
-                #     st.write(sample_users)
-                    
-                #     if not user_exists:
-                #         st.warning("User not found in training data. The system will provide popular recommendations.")
+                with st.expander("Debug Information (Click to expand)"):
+                    st.write(f"**Input User ID:** `{user_id}` (type: {type(user_id)})")
+                    user_exists = collab_rec.check_user_exists(user_id)
+                    st.write(f"**User exists in training data:** {user_exists}")
+                    sample_users = collab_rec.get_available_users(20)
+                    st.write(f"**Sample available user IDs ({len(sample_users)} shown):**")
+                    st.write(sample_users)
+                    if not user_exists:
+                        st.warning("User not found in training data. The system will provide popular recommendations.")
                 
-                # Get recommendations
                 try:
-                    # st.write("Generating recommendations...")
                     profile, recommendations = collab_rec.get_user_profile_and_recommendations(
                         user_id, 
                         skin_data['num_products']
                     )
                     
-                    # st.write(f"Profile received: {bool(profile)}")
-                    # st.write(f"Recommendations received: {len(recommendations) if recommendations else 0}")
-                    
-                    # Display profile
                     if profile:
                         st.subheader("User Profile")
                         col1, col2 = st.columns(2)
@@ -620,34 +658,20 @@ elif st.session_state.current_page == 'recommendations':
                     else:
                         st.warning("No user profile could be generated.")
                     
-                    # Display recommendations
                     if recommendations and len(recommendations) > 0:
                         st.subheader("Your Recommendations")
-                        
                         for i, rec in enumerate(recommendations, 1):
-                            with st.container():
-                                col1, col2, col3 = st.columns([3, 1, 1])
-                                
-                                with col1:
-                                    st.subheader(f"{i}. {rec.get('product_name', 'Unknown Product')}")
-                                    st.write(f"**Brand:** {rec.get('brand_name', 'Unknown')}")
-                                    st.write(f"**Category:** {rec.get('tertiary_category', 'Unknown')}")
-                                    st.write(f"**Product ID:** {rec.get('product_id', 'N/A')}")
-                                
-                                with col2:
-                                    rating = rec.get('predicted_rating', 0)
-                                    st.metric("Predicted Rating", f"{rating:.1f}/5")
-                                    price = rec.get('price_usd', 0)
-                                    st.write(f"**Price:** ${price:.2f}")
-                                
-                                with col3:
-                                    if st.button(f"Details", key=f"collab_btn_{i}"):
-                                        st.write("**Full Product Info:**")
-                                        st.json(rec)
-                                
-                                st.divider()
+                            match_percent = (rec['predicted_rating'] / 5.0) * 100
+                            # Ensure additional fields are included
+                            product_info = products_df[products_df['product_id'].astype(str) == rec['product_id']]
+                            if not product_info.empty:
+                                rec.update({
+                                    'size': product_info.iloc[0].get('size', 'Not specified'),
+                                    'highlights': product_info.iloc[0].get('highlights', 'Not specified'),
+                                    'ingredients': product_info.iloc[0].get('ingredients', 'Not specified')
+                                })
+                            display_recommendation(i, rec, rec['predicted_rating'], match_percent / 100)
                         
-                        # Download option
                         rec_df = pd.DataFrame(recommendations)
                         csv = rec_df.to_csv(index=False).encode("utf-8")
                         st.download_button(
@@ -656,43 +680,37 @@ elif st.session_state.current_page == 'recommendations':
                             file_name="collaborative_recommendations.csv", 
                             mime="text/csv"
                         )
-                        
                     else:
                         st.warning("No recommendations were generated.")
-                        
-                        # Troubleshooting suggestions
                         with st.expander("Troubleshooting"):
                             st.write("**Possible reasons:**")
                             st.write("1. User ID doesn't exist in training data")
                             st.write("2. User has rated all available products")
                             st.write("3. Model files are corrupted")
                             st.write("4. Training data is insufficient")
-                            
                             st.write("**Try these solutions:**")
                             st.write("- Use one of the sample user IDs shown above")
                             st.write("- Check if your model files exist and are not corrupted")
                             st.write("- Verify that your training data has sufficient records")
-                            
                             if sample_users:
                                 st.write("**Quick test - try this user ID:**")
                                 st.code(str(sample_users[0]))
-                                
                 except Exception as e:
                     st.error(f"Error generating recommendations: {str(e)}")
-                    
                     with st.expander("Full Error Details"):
                         st.code(str(e))
-                        import traceback
                         st.code(traceback.format_exc())
-
+    
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🔄 Get New Recommendations", use_container_width=True):
-            st.session_state.current_page = 'select_approach'
+            st.session_state.current_page = 'select approach'
             st.rerun()
     with col2:
         if st.button("🏠 Start Over", use_container_width=True):
             st.session_state.current_page = 'home'
+            st.session_state.selected_product = None
+            st.session_state.selected_product_category = None
             st.session_state.skin_data = {}
             st.rerun()
 
@@ -726,6 +744,16 @@ elif st.session_state.current_page == 'about':
     - Personalized based on your unique skin profile
     - No sponsored recommendations - we're here to help you find what really works
     """)
+    
+    # System status moved to About page
+    with st.expander("System Status"):
+        st.write(f"Hybrid Recommender: {'✅' if hybrid_rec else '❌'}")
+        st.write(f"Collaborative Recommender: {'✅' if collab_rec else '❌'}")
+        if collab_rec and collab_rec.df is not None:
+            st.write(f"Training Records: {len(collab_rec.df)}")
+            st.write(f"Unique Users: {collab_rec.df['author_id'].nunique()}")
+        else:
+            st.write("Training Data: ❌")
     
     st.divider()
     st.caption("Built with ❤️ using advanced machine learning algorithms")

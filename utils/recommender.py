@@ -6,16 +6,11 @@ from surprise import dump
 from sklearn.metrics.pairwise import cosine_similarity
 import re
 import warnings
-from sklearn.feature_extraction.text import TfidfVectorizer
-from surprise import SVD, Dataset, Reader
-from surprise.model_selection import GridSearchCV, train_test_split
-import pickle
-from collections import defaultdict
-from tqdm import tqdm
 import traceback
 import os
-
+import pickle
 warnings.filterwarnings('ignore')
+
 
 class EnhancedHybridRecommender:
     def __init__(self, train_path: str, products_path: str,
@@ -25,6 +20,7 @@ class EnhancedHybridRecommender:
         self.content_model_path = content_model_path
         self.svd_model_path = svd_model_path
         
+        # Initialize attributes
         self.prod_df = None
         self.prod_embeds = None
         self.svd_model = None
@@ -33,11 +29,13 @@ class EnhancedHybridRecommender:
         self.user_history_cache = {}
         self.product_popularity = {}
         self.product_features = {}
-        self.skin_profiles: Dict[str, dict] = {}
+        self.skin_profiles: Dict[str, dict] = {}   # NEW
 
+        # Load models and data
         self._load_models()
         self._preload_data()
 
+    # ----------------- LOAD MODELS & DATA -----------------
     def _load_models(self) -> None:
         self.prod_df, self.prod_embeds = joblib.load(self.content_model_path)
         _, self.svd_model = dump.load(self.svd_model_path)
@@ -73,6 +71,7 @@ class EnhancedHybridRecommender:
 
         self.product_popularity = self.train_df['product_id'].astype(str).value_counts().to_dict()
 
+    # ----------------- HYBRID CORE -----------------
     def enhanced_content_similarity(self, target_product_id: str, user_rated_products: List[str]) -> float:
         if target_product_id not in self.product_features or not user_rated_products:
             return 0.0
@@ -92,6 +91,7 @@ class EnhancedHybridRecommender:
                        content_weight: float = 0.4, collab_weight: float = 0.6) -> Tuple[float, float]:
         user_id, product_id = str(user_id), str(product_id)
 
+        # SVD Prediction
         try:
             svd_prediction = self.svd_model.predict(user_id, product_id)
             svd_pred = max(1.0, min(5.0, svd_prediction.est))
@@ -99,6 +99,7 @@ class EnhancedHybridRecommender:
         except:
             svd_pred, svd_conf = self.global_avg, 0.3
 
+        # Content Prediction
         content_pred, content_conf = np.nan, 0.0
         if user_id in self.user_history_cache:
             rated_products = self.user_history_cache[user_id]['rated_products']
@@ -109,6 +110,7 @@ class EnhancedHybridRecommender:
                     content_conf = min(1.0, sim_score * 1.8)
                     content_pred = max(1.0, min(5.0, content_pred))
 
+        # Combine
         predictions, confidences, weights = [], [], []
         user_data = self.user_history_cache.get(user_id, {})
         ratio = min(1.0, len(user_data.get('rated_products', [])) / 30)
@@ -135,6 +137,7 @@ class EnhancedHybridRecommender:
 
         return max(1.0, min(5.0, weighted_pred)), final_conf
 
+    # ----------------- RECOMMENDATION -----------------
     def generate_recommendations(self, user_id: str, top_n: int = 10,
                                  content_weight: float = 0.4, collab_weight: float = 0.6) -> List[Tuple[str, float, int]]:
         user_id = str(user_id)
@@ -150,6 +153,7 @@ class EnhancedHybridRecommender:
                 score, conf = self.hybrid_predict(user_id, product_id, content_weight, collab_weight)
                 match_percent = self.calculate_match_percentage(score, user_id, product_id)
 
+                # Skin profile adjustment
                 multiplier = self.filter_by_skin_profile(product_id, user_id)
                 score *= multiplier
                 score = max(1.0, min(5.0, score))
@@ -188,16 +192,19 @@ class EnhancedHybridRecommender:
             result.append((str(row['product_id']), score, match))
         return result
 
+    # ----------------- SKIN PROFILE EXTENSION -----------------
     def add_skin_profile(self, user_id: str, profile: dict):
+        """Store user's skin type, concern, and budget."""
         self.skin_profiles[str(user_id)] = profile
 
     def filter_by_skin_profile(self, product_id: str, user_id: str) -> float:
+        """Adjust recommendation score by matching skin tags + budget."""
         profile = self.skin_profiles.get(str(user_id))
         if not profile:
             return 1.0
 
         user_type = profile.get("skin_type", "").lower()
-        user_concerns = profile.get("concerns", [])
+        user_concern = profile.get("skin_concern", "").lower()
         user_budget = profile.get("budget", "")
 
         product = self.prod_df[self.prod_df["product_id"].astype(str) == str(product_id)].iloc[0]
@@ -217,9 +224,9 @@ class EnhancedHybridRecommender:
         elif user_type:
             multiplier *= 0.9
 
-        if user_concerns and any(c.lower() in matched_concerns for c in user_concerns):
+        if user_concern and user_concern in matched_concerns:
             multiplier *= 1.3
-        elif user_concerns:
+        elif user_concern:
             multiplier *= 0.85
 
         min_b, max_b = self._budget_range(user_budget)
@@ -248,6 +255,9 @@ class EnhancedHybridRecommender:
             return 100, float("inf")
         return 0, float("inf")
 
+
+
+# ----------------- PLACEHOLDER TEAMMATE CLASSES -----------------
 class ContentBasedRecommender:
     def __init__(self, products_path: str, vectorizer, tfidf_matrix):
         self.products_path = products_path
@@ -393,6 +403,8 @@ class ContentBasedRecommender:
 
         out["similarity"] = out["similarity"].round(4)
         return out
+
+
 
 class CollaborativeRecommender:
     def __init__(self, train_path="collaborative_training_data.csv"):
