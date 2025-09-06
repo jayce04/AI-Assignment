@@ -619,7 +619,7 @@ elif st.session_state.current_page == 'recommendations':
                         
                         for i, rec in enumerate(recommendations, 1):
                             with st.container():
-                                col1, col2, col3 = st.columns([3, 1, 1])
+                                col1, col2 = st.columns([3, 1])
                                 
                                 with col1:
                                     st.subheader(f"{i}. {rec.get('product_name', 'Unknown Product')}")
@@ -632,11 +632,6 @@ elif st.session_state.current_page == 'recommendations':
                                     st.metric("Predicted Rating", f"{rating:.1f}/5")
                                     price = rec.get('price_usd', 0)
                                     st.write(f"**Price:** ${price:.2f}")
-                                
-                                with col3:
-                                    if st.button(f"Details", key=f"collab_btn_{i}"):
-                                        st.write("**Full Product Info:**")
-                                        st.json(rec)
                                 
                                 st.divider()
                         
@@ -652,23 +647,6 @@ elif st.session_state.current_page == 'recommendations':
                         
                     else:
                         st.warning("No recommendations were generated.")
-                        
-                        # Troubleshooting suggestions
-                        with st.expander("Troubleshooting"):
-                            st.write("**Possible reasons:**")
-                            st.write("1. User ID doesn't exist in training data")
-                            st.write("2. User has rated all available products")
-                            st.write("3. Model files are corrupted")
-                            st.write("4. Training data is insufficient")
-                            
-                            st.write("**Try these solutions:**")
-                            st.write("- Use one of the sample user IDs shown above")
-                            st.write("- Check if your model files exist and are not corrupted")
-                            st.write("- Verify that your training data has sufficient records")
-                            
-                            if sample_users:
-                                st.write("**Quick test - try this user ID:**")
-                                st.code(str(sample_users[0]))
                                 
                 except Exception as e:
                     st.error(f"Error generating recommendations: {str(e)}")
