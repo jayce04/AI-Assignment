@@ -6,11 +6,16 @@ from surprise import dump
 from sklearn.metrics.pairwise import cosine_similarity
 import re
 import warnings
+from sklearn.feature_extraction.text import TfidfVectorizer
+from surprise import SVD, Dataset, Reader
+from surprise.model_selection import GridSearchCV, train_test_split
+import pickle
+from collections import defaultdict
+from tqdm import tqdm
 import traceback
 import os
-import pickle
-warnings.filterwarnings('ignore')
 
+warnings.filterwarnings('ignore')
 
 class EnhancedHybridRecommender:
     def __init__(self, train_path: str, products_path: str,
@@ -20,7 +25,6 @@ class EnhancedHybridRecommender:
         self.content_model_path = content_model_path
         self.svd_model_path = svd_model_path
         
-        # Initialize attributes
         self.prod_df = None
         self.prod_embeds = None
         self.svd_model = None
@@ -29,13 +33,11 @@ class EnhancedHybridRecommender:
         self.user_history_cache = {}
         self.product_popularity = {}
         self.product_features = {}
-        self.skin_profiles: Dict[str, dict] = {}   # NEW
+        self.skin_profiles: Dict[str, dict] = {}
 
-        # Load models and data
         self._load_models()
         self._preload_data()
 
-    # ----------------- LOAD MODELS & DATA -----------------
     def _load_models(self) -> None:
         self.prod_df, self.prod_embeds = joblib.load(self.content_model_path)
         _, self.svd_model = dump.load(self.svd_model_path)
@@ -71,7 +73,6 @@ class EnhancedHybridRecommender:
 
         self.product_popularity = self.train_df['product_id'].astype(str).value_counts().to_dict()
 
-    # ----------------- HYBRID CORE -----------------
     def enhanced_content_similarity(self, target_product_id: str, user_rated_products: List[str]) -> float:
         if target_product_id not in self.product_features or not user_rated_products:
             return 0.0
@@ -91,7 +92,6 @@ class EnhancedHybridRecommender:
                        content_weight: float = 0.4, collab_weight: float = 0.6) -> Tuple[float, float]:
         user_id, product_id = str(user_id), str(product_id)
 
-        # SVD Prediction
         try:
             svd_prediction = self.svd_model.predict(user_id, product_id)
             svd_pred = max(1.0, min(5.0, svd_prediction.est))
@@ -99,7 +99,6 @@ class EnhancedHybridRecommender:
         except:
             svd_pred, svd_conf = self.global_avg, 0.3
 
-        # Content Prediction
         content_pred, content_conf = np.nan, 0.0
         if user_id in self.user_history_cache:
             rated_products = self.user_history_cache[user_id]['rated_products']
@@ -110,7 +109,6 @@ class EnhancedHybridRecommender:
                     content_conf = min(1.0, sim_score * 1.8)
                     content_pred = max(1.0, min(5.0, content_pred))
 
-        # Combine
         predictions, confidences, weights = [], [], []
         user_data = self.user_history_cache.get(user_id, {})
         ratio = min(1.0, len(user_data.get('rated_products', [])) / 30)
@@ -137,7 +135,6 @@ class EnhancedHybridRecommender:
 
         return max(1.0, min(5.0, weighted_pred)), final_conf
 
-    # ----------------- RECOMMENDATION -----------------
     def generate_recommendations(self, user_id: str, top_n: int = 10,
                                  content_weight: float = 0.4, collab_weight: float = 0.6) -> List[Tuple[str, float, int]]:
         user_id = str(user_id)
@@ -153,7 +150,6 @@ class EnhancedHybridRecommender:
                 score, conf = self.hybrid_predict(user_id, product_id, content_weight, collab_weight)
                 match_percent = self.calculate_match_percentage(score, user_id, product_id)
 
-                # Skin profile adjustment
                 multiplier = self.filter_by_skin_profile(product_id, user_id)
                 score *= multiplier
                 score = max(1.0, min(5.0, score))
@@ -192,19 +188,16 @@ class EnhancedHybridRecommender:
             result.append((str(row['product_id']), score, match))
         return result
 
-    # ----------------- SKIN PROFILE EXTENSION -----------------
     def add_skin_profile(self, user_id: str, profile: dict):
-        """Store user's skin type, concern, and budget."""
         self.skin_profiles[str(user_id)] = profile
 
     def filter_by_skin_profile(self, product_id: str, user_id: str) -> float:
-        """Adjust recommendation score by matching skin tags + budget."""
         profile = self.skin_profiles.get(str(user_id))
         if not profile:
             return 1.0
 
         user_type = profile.get("skin_type", "").lower()
-        user_concern = profile.get("skin_concern", "").lower()
+        user_concerns = profile.get("concerns", [])
         user_budget = profile.get("budget", "")
 
         product = self.prod_df[self.prod_df["product_id"].astype(str) == str(product_id)].iloc[0]
@@ -224,9 +217,9 @@ class EnhancedHybridRecommender:
         elif user_type:
             multiplier *= 0.9
 
-        if user_concern and user_concern in matched_concerns:
+        if user_concerns and any(c.lower() in matched_concerns for c in user_concerns):
             multiplier *= 1.3
-        elif user_concern:
+        elif user_concerns:
             multiplier *= 0.85
 
         min_b, max_b = self._budget_range(user_budget)
@@ -255,9 +248,6 @@ class EnhancedHybridRecommender:
             return 100, float("inf")
         return 0, float("inf")
 
-
-
-# ----------------- PLACEHOLDER TEAMMATE CLASSES -----------------
 class ContentBasedRecommender:
     def __init__(self, products_path: str, vectorizer, tfidf_matrix):
         self.products_path = products_path
@@ -267,17 +257,25 @@ class ContentBasedRecommender:
         self._load_data()
 
     def _load_data(self):
-        """Load product data."""
         try:
             self.prod_df = pd.read_csv(self.products_path)
             for c in ["price_usd", "rating", "reviews"]:
                 if c in self.prod_df.columns:
                     self.prod_df[c] = pd.to_numeric(self.prod_df[c], errors="coerce")
-            self.prod_df["skin_concern"] = self.prod_df.get("skin_concern", "").fillna("").astype(str)
-            self.prod_df["skin_type"] = self.prod_df.get("skin_type", "").fillna("").astype(str)
-            self.prod_df["product_type"] = self.prod_df.get("product_type", "").fillna("").astype(str)
+            self.prod_df["skin_concern"] = self.prod_df.get("skin_concern", "").fillna("None").astype(str)
+            self.prod_df["skin_type"] = self.prod_df.get("skin_type", "").fillna("Unknown").astype(str)
+            self.prod_df["product_type"] = self.prod_df.get("product_type", "").fillna("Unknown").astype(str)
+            
+            # Log empty or missing data
+            for col in ["skin_type", "skin_concern", "product_type", "reviews"]:
+                missing = self.prod_df[self.prod_df[col].isin(["", "None", "Unknown"]) | self.prod_df[col].isna()]
+                print(f"Products with empty or default {col}: {len(missing)}")
+                if not missing.empty:
+                    print(f"Sample products with empty or default {col}:\n", missing[['product_id', 'product_name', 'brand_name']].head())
+            
             if "product_content" not in self.prod_df.columns:
                 raise ValueError("Missing 'product_content' column in products data")
+            
             print("✅ Content-based recommender initialized")
         except Exception as e:
             print(f"❌ Error loading product data: {e}")
@@ -292,9 +290,8 @@ class ContentBasedRecommender:
         return {t.strip().lower() for t in re.split(r"[;,/|]", str(x)) if t.strip()}
 
     def get_recommendations(self, user_id: str, skin_type: str, concerns: list,
-                           budget: str, top_n: int = 5, product_type: str = None,
-                           concern_match: str = "all") -> pd.DataFrame:
-        """Generate content-based recommendations based on skin profile."""
+                        budget: str, top_n: int = 5, product_type: str = None,
+                        concern_match: str = "all") -> pd.DataFrame:
         print(f"Input: user_id={user_id}, skin_type={skin_type}, concerns={concerns}, budget={budget}, product_type={product_type}, concern_match={concern_match}")
         
         max_price = None
@@ -336,18 +333,15 @@ class ContentBasedRecommender:
         for i, sim in enumerate(sims):
             row = self.prod_df.iloc[i]
 
-            # Product type filter (skip if None)
             if req_product_type and str(row.get("product_type", "")).strip().lower() != req_product_type:
                 continue
             print(f"After product_type filter: {len(rows)+1} products")
 
-            # Skin type filter (skip if None)
             row_skin = str(row.get("skin_type", "")).strip().lower()
             if req_skin and row_skin and row_skin != req_skin:
                 continue
             print(f"After skin_type filter: {len(rows)+1} products")
 
-            # Skin concern filter
             row_concern = self._to_set(row.get("skin_concern", ""))
             if req_concern:
                 if concern_match == "all":
@@ -358,7 +352,6 @@ class ContentBasedRecommender:
                         continue
             print(f"After skin_concern filter: {len(rows)+1} products")
 
-            # Price filter
             p = price_col.iat[i]
             if max_price is not None and (pd.isna(p) or p > float(max_price)):
                 continue
@@ -368,10 +361,12 @@ class ContentBasedRecommender:
                 "product_id": str(row.get("product_id", "")),
                 "product_name": row.get("product_name", ""),
                 "brand_name": row.get("brand_name", ""),
-                "tertiary_category": row.get("product_type", ""),
+                "product_type": row.get("product_type", "Unknown"),  # For Type and Category
+                "skin_type": row.get("skin_type", "Unknown"),  # For Skin Type
+                "skin_concern": row.get("skin_concern", "None"),  # For Skin Concern
                 "price_usd": row.get("price_usd", ""),
                 "rating": rating_col.iat[i],
-                "reviews": reviews_col.iat[i],
+                "reviews": reviews_col.iat[i],  # For Reviews
                 "similarity": float(sim)
             })
 
@@ -383,7 +378,9 @@ class ContentBasedRecommender:
                 "product_id": str(row.get("product_id", "")),
                 "product_name": row.get("product_name", ""),
                 "brand_name": row.get("brand_name", ""),
-                "tertiary_category": row.get("product_type", ""),
+                "product_type": row.get("product_type", "Unknown"),
+                "skin_type": row.get("skin_type", "Unknown"),
+                "skin_concern": row.get("skin_concern", "None"),
                 "price_usd": row.get("price_usd", ""),
                 "rating": rating_col.iat[i],
                 "reviews": reviews_col.iat[i],
@@ -403,8 +400,6 @@ class ContentBasedRecommender:
 
         out["similarity"] = out["similarity"].round(4)
         return out
-
-
 
 class CollaborativeRecommender:
     def __init__(self, train_path="collaborative_training_data.csv"):
