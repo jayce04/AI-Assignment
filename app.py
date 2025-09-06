@@ -446,12 +446,12 @@ elif st.session_state.current_page == 'recommendations':
             st.write(f"**Concerns:** {', '.join(skin_data['concerns']) if skin_data['concerns'] else 'None'}")
             # Show user classification
             if not user_exists:
-                st.write(f"**User Type:** 🆕 New User (Content 70% + Collab 30%)")
+                st.write(f"**User Type:** 🆕 New User ")
             elif user_rating_count < 10:
-                st.write(f"**User Type:** 👤 Existing User - {user_rating_count} ratings (Content 60% + Collab 40%)")
+                st.write(f"**User Type:** 👤 Existing User - {user_rating_count} ratings ")
             else:
-                st.write(f"**User Type:** 🎯 Experienced User - {user_rating_count} ratings (Content 40% + Collab 60%)")
-    
+                st.write(f"**User Type:** 🎯 Experienced User - {user_rating_count} ratings ")
+
     # Get and display recommendations
     st.subheader("Recommended For You")
     
