@@ -14,7 +14,6 @@ from utils.recommender import EnhancedHybridRecommender, CollaborativeRecommende
 import os
 import traceback
 import sys
-import os
 # Force UTF-8 encoding for the terminal
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
@@ -22,12 +21,12 @@ sys.stderr.reconfigure(encoding='utf-8')
 def debug_file_existence():
     """Check if all required files exist"""
     required_files = [
-        "products_preprocessed.csv",
-        "collaborative_training_data.csv",
+        "data/CleanedDataSet/products_preprocessed.csv",
+        "data/CleanedDataSet/collaborative_training_data.csv",
         "models/product_embeddings.pkl",
         "models/surprise_svd_model.pkl",
-        "svd_model.pkl",
-        "trainset.pkl"
+        "models/svd_model.pkl",
+        "model/trainset.pkl"
     ]
     
     print("=" * 50)
@@ -46,7 +45,6 @@ debug_file_existence()
 
 # Modified load_recommenders function with detailed debugging
 @st.cache_resource
-@st.cache_resource
 def load_recommenders():
     print("Starting to load recommenders...")
     
@@ -57,8 +55,8 @@ def load_recommenders():
     try:
         print("Loading hybrid recommender...")
         hybrid_rec = EnhancedHybridRecommender(
-            train_path="collaborative_training_data.csv",
-            products_path="products_preprocessed.csv",
+            train_path="data/CleanedDataSet/collaborative_training_data.csv",
+            products_path="data/CleanedDataSet/products_preprocessed.csv",
             content_model_path="models/product_embeddings.pkl",
             svd_model_path="models/surprise_svd_model.pkl"
         )
@@ -70,7 +68,7 @@ def load_recommenders():
     # Try to load collaborative recommender
     try:
         print("Loading collaborative recommender...")
-        collab_rec = CollaborativeRecommender("collaborative_training_data.csv")
+        collab_rec = CollaborativeRecommender("data/CleanedDataSet/collaborative_training_data.csv")
         print(f"CollaborativeRecommender df shape: {collab_rec.df.shape if collab_rec.df is not None else 'None'}")
         print("✅ Collaborative recommender loaded successfully")
     except Exception as e:
@@ -83,17 +81,17 @@ def load_recommenders():
 hybrid_rec, collab_rec = load_recommenders()
 
 # Add status display in sidebar
-# with st.sidebar:
-#     st.divider()
-#     st.subheader("System Status")
-#     st.write(f"Hybrid Recommender: {'✅' if hybrid_rec else '❌'}")
-#     st.write(f"Collaborative Recommender: {'✅' if collab_rec else '❌'}")
+with st.sidebar:
+    st.divider()
+    st.subheader("System Status")
+    st.write(f"Hybrid Recommender: {'✅' if hybrid_rec else '❌'}")
+    st.write(f"Collaborative Recommender: {'✅' if collab_rec else '❌'}")
     
-#     if collab_rec and collab_rec.df is not None:
-#         st.write(f"Training Records: {len(collab_rec.df)}")
-#         st.write(f"Unique Users: {collab_rec.df['author_id'].nunique()}")
-#     else:
-#         st.write("Training Data: ❌")
+    if collab_rec and collab_rec.df is not None:
+        st.write(f"Training Records: {len(collab_rec.df)}")
+        st.write(f"Unique Users: {collab_rec.df['author_id'].nunique()}")
+    else:
+        st.write("Training Data: ❌")
 
 # Page setup
 st.set_page_config(
@@ -115,7 +113,7 @@ if 'skin_data' not in st.session_state:
 
 # Load product data and TF-IDF
 @st.cache_data(show_spinner=True)
-def load_products(path="products_preprocessed.csv"):
+def load_products(path="data/CleanedDataSet/products_preprocessed.csv"):
     df = pd.read_csv(path)
     for c in ["price_usd", "rating", "reviews"]:
         if c in df.columns:
@@ -131,7 +129,7 @@ def build_vectorizer_and_matrix(product_text: pd.Series):
     tfidf_matrix = vectorizer.fit_transform(product_text.fillna("").astype(str))
     return vectorizer, tfidf_matrix
 
-df = load_products("products_preprocessed.csv")
+df = load_products("data/CleanedDataSet/products_preprocessed.csv")
 vectorizer, tfidf_matrix = build_vectorizer_and_matrix(df["product_content"])
 
 # Recommender logic from zw_app.py
@@ -266,8 +264,8 @@ def load_recommenders():
     try:
         print("Loading hybrid recommender...")
         hybrid_rec = EnhancedHybridRecommender(
-            train_path="collaborative_training_data.csv",
-            products_path="products_preprocessed.csv",
+            train_path="data/CleanedDataSet/collaborative_training_data.csv",
+            products_path="data/CleanedDataSet/products_preprocessed.csv",
             content_model_path="models/product_embeddings.pkl",
             svd_model_path="models/surprise_svd_model.pkl"
         )
@@ -279,7 +277,7 @@ def load_recommenders():
     # Try to load collaborative recommender
     try:
         print("Loading collaborative recommender...")
-        collab_rec = CollaborativeRecommender("collaborative_training_data.csv")
+        collab_rec = CollaborativeRecommender("data/CleanedDataSet/collaborative_training_data.csv")
         print(f"CollaborativeRecommender df shape: {collab_rec.df.shape if collab_rec.df is not None else 'None'}")
         print("✅ Collaborative recommender loaded successfully")
     except Exception as e:
@@ -405,7 +403,7 @@ elif st.session_state.current_page == 'input_form':
         budget = None
         
         if model_type in ['collab', 'hybrid']:
-            user_id = st.text_input("User ID", placeholder="Enter your user ID", help="Required for personalized recommendations")
+            user_id = st.text_input("User ID", placeholder="Leave blank for new user (optional)", help="Optional: leave blank to get popular recommendations as a new user")
         
         if model_type in ['content', 'hybrid']:
             col1, col2 = st.columns(2)
@@ -433,7 +431,7 @@ elif st.session_state.current_page == 'input_form':
         
         if submitted:
             st.session_state.skin_data = {
-                'user_id': user_id,
+                'user_id': user_id.strip() if user_id else None,
                 'skin_type': None if skin_type == "(any)" else skin_type,
                 'concerns': concerns if concerns else None,
                 'budget': None if budget == "(any)" else budget,
@@ -460,6 +458,8 @@ elif st.session_state.current_page == 'recommendations':
         with col1:
             if 'user_id' in skin_data and skin_data['user_id']:
                 st.write(f"**User ID:** {skin_data['user_id']}")
+            else:
+                st.write("**User ID:** New User (No ID provided)")
             if 'skin_type' in skin_data and skin_data['skin_type']:
                 st.write(f"**Skin Type:** {skin_data['skin_type']}")
             if 'product_type' in skin_data and skin_data['product_type']:
@@ -553,108 +553,81 @@ elif st.session_state.current_page == 'recommendations':
     
     # Replace your collaborative filtering section in app.py with this:
     elif model_type == 'collab':
-        # st.subheader("Community-Based Recommendations")
         
         # Check if collaborative recommender is available
         if not collab_rec:
             st.error("Collaborative Recommender is not available. Please check the system status in the sidebar.")
             st.stop()
         
-        # # Show system information
-        # with st.expander("System Information"):
-        #     system_info = collab_rec.get_system_info()
-        #     st.json(system_info)
-        
         with st.spinner("Finding community favorites for your skin type..."):
-            if not skin_data.get('user_id'):
-                st.error("Please enter a valid User ID.")
+            user_id = skin_data.get('user_id')
+            if not user_id:
+                st.info("No User ID provided. Showing popular recommendations for new users.")
             else:
-                user_id = str(skin_data['user_id']).strip()
                 st.info(f"Searching for recommendations for user: '{user_id}'")
+            
+            # Get recommendations
+            try:
+                profile, recommendations = collab_rec.get_user_profile_and_recommendations(
+                    user_id, 
+                    skin_data['num_products']
+                )
                 
-                # Show debugging information
-                # with st.expander("Debug Information (Click to expand)"):
-                #     st.write(f"**Input User ID:** `{user_id}` (type: {type(user_id)})")
-                    
-                #     # Check user existence
-                #     user_exists = collab_rec.check_user_exists(user_id)
-                #     st.write(f"**User exists in training data:** {user_exists}")
-                    
-                #     # Show sample user IDs
-                #     sample_users = collab_rec.get_available_users(20)
-                #     st.write(f"**Sample available user IDs ({len(sample_users)} shown):**")
-                #     st.write(sample_users)
-                    
-                #     if not user_exists:
-                #         st.warning("User not found in training data. The system will provide popular recommendations.")
+                # Display profile
+                if profile:
+                    st.subheader("User Profile")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Total Reviews", profile.get('total_reviews', 0))
+                        st.metric("Average Rating", f"{profile.get('avg_rating', 0):.2f}")
+                    with col2:
+                        st.write(f"**Skin Type:** {profile.get('skin_type', 'Unknown')}")
+                        fav_brands = profile.get('favorite_brands', [])
+                        st.write(f"**Favorite Brands:** {', '.join(fav_brands[:3]) if fav_brands else 'None'}")
+                else:
+                    st.info("No user profile available. Showing popular recommendations.")
                 
-                # Get recommendations
-                try:
-                    # st.write("Generating recommendations...")
-                    profile, recommendations = collab_rec.get_user_profile_and_recommendations(
-                        user_id, 
-                        skin_data['num_products']
+                # Display recommendations
+                if recommendations and len(recommendations) > 0:
+                    st.subheader("Your Recommendations")
+                    
+                    for i, rec in enumerate(recommendations, 1):
+                        with st.container():
+                            col1, col2 = st.columns([3, 1])
+                            
+                            with col1:
+                                st.subheader(f"{i}. {rec.get('product_name', 'Unknown Product')}")
+                                st.write(f"**Brand:** {rec.get('brand_name', 'Unknown')}")
+                                st.write(f"**Category:** {rec.get('tertiary_category', 'Unknown')}")
+                                st.write(f"**Product ID:** {rec.get('product_id', 'N/A')}")
+                            
+                            with col2:
+                                rating = rec.get('predicted_rating', 0)
+                                st.metric("Predicted Rating", f"{rating:.1f}/5")
+                                price = rec.get('price_usd', 0)
+                                st.write(f"**Price:** ${price:.2f}")
+                            
+                            st.divider()
+                    
+                    # Download option
+                    rec_df = pd.DataFrame(recommendations)
+                    csv = rec_df.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        "Download Recommendations (CSV)", 
+                        data=csv, 
+                        file_name="collaborative_recommendations.csv", 
+                        mime="text/csv"
                     )
+                else:
+                    st.warning("No recommendations were generated.")
                     
-                    # st.write(f"Profile received: {bool(profile)}")
-                    # st.write(f"Recommendations received: {len(recommendations) if recommendations else 0}")
-                    
-                    # Display profile
-                    if profile:
-                        st.subheader("User Profile")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Total Reviews", profile.get('total_reviews', 0))
-                            st.metric("Average Rating", f"{profile.get('avg_rating', 0):.2f}")
-                        with col2:
-                            st.write(f"**Skin Type:** {profile.get('skin_type', 'Unknown')}")
-                            fav_brands = profile.get('favorite_brands', [])
-                            st.write(f"**Favorite Brands:** {', '.join(fav_brands[:3]) if fav_brands else 'None'}")
-                    else:
-                        st.warning("No user profile could be generated.")
-                    
-                    # Display recommendations
-                    if recommendations and len(recommendations) > 0:
-                        st.subheader("Your Recommendations")
-                        
-                        for i, rec in enumerate(recommendations, 1):
-                            with st.container():
-                                col1, col2 = st.columns([3, 1])
-                                
-                                with col1:
-                                    st.subheader(f"{i}. {rec.get('product_name', 'Unknown Product')}")
-                                    st.write(f"**Brand:** {rec.get('brand_name', 'Unknown')}")
-                                    st.write(f"**Category:** {rec.get('tertiary_category', 'Unknown')}")
-                                    st.write(f"**Product ID:** {rec.get('product_id', 'N/A')}")
-                                
-                                with col2:
-                                    rating = rec.get('predicted_rating', 0)
-                                    st.metric("Predicted Rating", f"{rating:.1f}/5")
-                                    price = rec.get('price_usd', 0)
-                                    st.write(f"**Price:** ${price:.2f}")
-                                
-                                st.divider()
-                        
-                        # Download option
-                        rec_df = pd.DataFrame(recommendations)
-                        csv = rec_df.to_csv(index=False).encode("utf-8")
-                        st.download_button(
-                            "Download Recommendations (CSV)", 
-                            data=csv, 
-                            file_name="collaborative_recommendations.csv", 
-                            mime="text/csv"
-                        )
-                        
-                    else:
-                        st.warning("No recommendations were generated.")
-                                
-                except Exception as e:
-                    st.error(f"Error generating recommendations: {str(e)}")
-                    
-                    with st.expander("Full Error Details"):
-                        st.code(str(e))
-                        import traceback
-                        st.code(traceback.format_exc())
+            except Exception as e:
+                st.error(f"Error generating recommendations: {str(e)}")
+                
+                with st.expander("Full Error Details"):
+                    st.code(str(e))
+                    import traceback
+                    st.code(traceback.format_exc())
 
     col1, col2 = st.columns(2)
     with col1:
@@ -662,7 +635,7 @@ elif st.session_state.current_page == 'recommendations':
             st.session_state.current_page = 'select_approach'
             st.rerun()
     with col2:
-        if st.button("🏠 Start Over", use_container_width=True):
+        if st.button("🏠 Home", use_container_width=True):
             st.session_state.current_page = 'home'
             st.session_state.skin_data = {}
             st.rerun()
