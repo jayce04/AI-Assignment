@@ -26,7 +26,7 @@ if 'selected_product' not in st.session_state:
     st.session_state.selected_product = None
 
 # 辅助函数定义
-def display_recommendation(index, product, rating, match_percent):
+def display_recommendation(index, product, rating, match_percent, user_id=None, recommender=None):
     with st.container():
         col1, col2, col3 = st.columns([3, 1, 1])
         
@@ -34,6 +34,30 @@ def display_recommendation(index, product, rating, match_percent):
             st.subheader(f"{index}. {product.get('product_name', 'Product')}")
             st.write(f"**Brand:** {product.get('brand_name', 'Unknown')}")
             st.write(f"**Category:** {product.get('tertiary_category', 'Unknown')}")
+            
+            # Show debug info if available
+            if user_id and recommender:
+                try:
+                    product_id = product.get('product_id')
+                    if hasattr(product_id, 'item'):
+                        product_id = product_id.item()
+                    debug_info = recommender.get_recommendation_debug_info(str(product_id), str(user_id))
+                    
+                    # Show why this product was recommended
+                    with st.expander("🔍 Why was this recommended?", expanded=False):
+                        compat = debug_info.get('compatibility', {})
+                        st.write(f"**Skin Type:** {compat.get('skin_type_status', 'N/A')}")
+                        st.write(f"**Concerns:** {compat.get('concern_status', 'N/A')}")
+                        st.write(f"**Budget:** {compat.get('budget_status', 'N/A')}")
+                        st.write(f"**Compatibility Score:** {compat.get('final_multiplier', 'N/A')}")
+                        
+                        prod_info = debug_info.get('product_info', {})
+                        if prod_info.get('detected_skin_types'):
+                            st.write(f"**Product targets:** {', '.join(prod_info['detected_skin_types'])} skin")
+                        if prod_info.get('detected_concerns'):
+                            st.write(f"**Product addresses:** {', '.join(prod_info['detected_concerns'])}")
+                except Exception as e:
+                    pass  # Skip debug info if there's an error
         
         with col2:
             st.metric("Rating", f"{rating:.1f}/5")
@@ -43,7 +67,14 @@ def display_recommendation(index, product, rating, match_percent):
         with col3:
             st.metric("Price", f"${product.get('price_usd', 0):.2f}")
             if st.button("View Details", key=f"btn_{index}"):
-                st.write(f"**Product ID:** {product.get('product_id', 'N/A')}")
+                # Store the product for viewing details WITHOUT changing the selected product
+                product_id = product.get('product_id')
+                if hasattr(product_id, 'item'):
+                    product_id = product_id.item()
+                # Use a separate variable for viewing details
+                st.session_state.viewing_product = product_id
+                st.session_state.current_page = "product_detail"
+                st.rerun()
         
         st.divider()
 
@@ -58,7 +89,11 @@ def display_product_card(product, col):
             
             if st.button("Select & Get Recommendations", key=f"select_{product['product_id']}", 
                         use_container_width=True):
-                st.session_state.selected_product = product['product_id']
+                # Ensure we store a scalar value, not a pandas Series
+                product_id = product['product_id']
+                if hasattr(product_id, 'item'):
+                    product_id = product_id.item()  # Extract scalar from pandas Series
+                st.session_state.selected_product = product_id
                 st.session_state.current_page = 'skin analysis'
                 st.rerun()
 
@@ -66,6 +101,7 @@ def display_product_card(product, col):
 @st.cache_resource
 def load_recommenders():
     try:
+        # Load all components silently
         hybrid_rec = EnhancedHybridRecommender(
             train_path="data/CleanedDataSet/train_skincare.csv",
             products_path="data/CleanedDataSet/filtered_skincare_products.csv",
@@ -77,11 +113,24 @@ def load_recommenders():
         collab_rec = CollaborativeRecommender("data/CleanedDataSet/train_skincare.csv")
         
         return hybrid_rec, content_rec, collab_rec
+        
     except Exception as e:
-        st.error(f"Error loading recommenders: {e}")
+        st.error(f"❌ Error loading recommenders: {str(e)}")
+        import traceback
+        st.error(f"Detailed error: {traceback.format_exc()}")
         return None, None, None
 
-hybrid_rec, content_rec, collab_rec = load_recommenders()
+# Load recommenders and show status only once
+if 'recommenders_loaded' not in st.session_state:
+    with st.spinner('🔄 Loading recommender systems...'):
+        hybrid_rec, content_rec, collab_rec = load_recommenders()
+        if hybrid_rec is not None:
+            st.session_state.recommenders_loaded = True
+            st.success("✅ All recommenders loaded successfully!")
+            # Auto-refresh to clear the loading message
+            st.rerun()
+else:
+    hybrid_rec, content_rec, collab_rec = load_recommenders()
 
 # 加载产品数据
 @st.cache_data
@@ -172,8 +221,14 @@ elif st.session_state.current_page == 'skin analysis':
         st.rerun()
     
     # 如果是从产品页面来的，显示选中的产品
-    if st.session_state.selected_product:
-        product_info = products_df[products_df['product_id'] == st.session_state.selected_product]
+    if st.session_state.selected_product is not None:
+        # Handle both pandas Series and simple values
+        selected_id = st.session_state.selected_product
+        if hasattr(selected_id, 'iloc'):
+            # It's a pandas object, extract the value
+            selected_id = selected_id
+        
+        product_info = products_df[products_df['product_id'] == selected_id]
         if not product_info.empty:
             product_info = product_info.iloc[0]
             st.info(f"**Selected Product:** {product_info['product_name']} by {product_info['brand_name']}")
@@ -216,6 +271,21 @@ elif st.session_state.current_page == 'skin analysis':
 
 elif st.session_state.current_page == 'select approach':
     st.header("Choose Your Recommendation Style")
+    
+    # Show the selected product info
+    if st.session_state.selected_product is not None:
+        selected_product_id = st.session_state.selected_product
+        if hasattr(selected_product_id, 'item'):
+            product_id = selected_product_id.item()
+        else:
+            product_id = str(selected_product_id)
+        
+        # Find and display the selected product
+        product_info = products_df[products_df['product_id'] == product_id]
+        if not product_info.empty:
+            product = product_info.iloc[0]
+            st.info(f"🎯 **Selected Product:** {product['product_name']} by {product['brand_name']}")
+            st.write(f"**Category:** {product['tertiary_category']} | **Price:** ${product['price_usd']:.2f}")
     
     if st.button("← Back to Skin Analysis"):
         st.session_state.current_page = 'skin analysis'
@@ -271,8 +341,30 @@ elif st.session_state.current_page == 'recommendations':
     
     skin_data = st.session_state.skin_data
     model_type = st.session_state.selected_model
+
+    # --- Check if user exists in training set (memory efficient) ---
+    try:
+        # Only load the author_id column to save memory
+        train_df = pd.read_csv("data/CleanedDataSet/train_skincare.csv", 
+                             usecols=['author_id'], 
+                             low_memory=False,
+                             chunksize=10000)
+        existing_users = set()
+        for chunk in train_df:
+            existing_users.update(chunk["author_id"].astype(str).unique())
+        user_exists = str(skin_data['user_id']) in existing_users
+    except Exception as e:
+        st.warning(f"Could not check user existence: {e}")
+        # Default to treating as new user if we can't check
+        user_exists = False
+
+    if model_type == 'hybrid':
+        if user_exists:
+            st.info("👥 Using Collaborative Filtering (existing user found in dataset)")
+        else:
+            st.info("🤖 Using Content-Based Filtering (new user, fallback to same-category recommendations)")
     
-    # 显示用户输入
+    # Display skin profile summary
     with st.expander("Your Skin Profile"):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -285,82 +377,81 @@ elif st.session_state.current_page == 'recommendations':
             st.write(f"**Concerns:** {', '.join(skin_data['concerns']) if skin_data['concerns'] else 'None'}")
             st.write(f"**Model:** {model_type.capitalize()}")
     
-    # 获取和显示推荐
+    # If coming from a product page, display the selected product
+    if st.session_state.selected_product is not None:
+        # Ensure selected_product is a string, not a pandas Series
+        if hasattr(st.session_state.selected_product, 'iloc'):
+            selected_id = st.session_state.selected_product
+        else:
+            selected_id = st.session_state.selected_product
+            
+        product_info = products_df[products_df['product_id'] == selected_id]
+        if not product_info.empty:
+            product_info = product_info.iloc[0]
+            st.info(f"**Selected Product:** {product_info['product_name']} by {product_info['brand_name']}")
+    # Get and display recommendations
     st.subheader("Recommended For You")
     
         # 获取推荐
     if model_type == 'hybrid' and hybrid_rec:
         # 添加皮肤数据到推荐器 - 确保使用正确的键名
-        skin_profile_data = {
-            'user_id': skin_data['user_id'],
+        # With this:
+        hybrid_rec.add_skin_profile(skin_data['user_id'], {
             'skin_type': skin_data['skin_type'],
-            'concerns': skin_data['concerns'],  # 确保这是列表
+            'concerns': skin_data['concerns'],
             'budget': skin_data['budget']
-        }
+        })
         
         # 调试信息
         st.write(f"Debug: Adding skin profile for user {skin_data['user_id']}")
         st.write(f"Debug: Skin type = {skin_data['skin_type']}")
         st.write(f"Debug: Concerns = {skin_data['concerns']}")
         st.write(f"Debug: Budget = {skin_data['budget']}")
-        
-        try:
-            hybrid_rec.add_skin_profile(skin_data['user_id'], skin_profile_data)
-            st.success("✅ Skin profile added successfully!")
-        except Exception as e:
-            st.error(f"❌ Error adding skin profile: {e}")
-            st.write("Falling back to default recommendations without skin filtering")
-        
+                
         with st.spinner("Generating hybrid recommendations..."):
             try:
-                recommendations = hybrid_rec.generate_recommendations(
-                    skin_data['user_id'], 
-                    skin_data['num_products']
-                )
-                
+                if not user_exists:
+                    # NEW USER: Use full hybrid recommendations (no category restrictions)
+                    st.write("🚀 Using Full Hybrid Content-Based Filtering (searching all categories)")
+                    
+                    recommendations = hybrid_rec.enhanced_demo_recommendations(
+                        user_id=skin_data['user_id'],
+                        top_n=skin_data['num_products'],
+                        content_weight=0.4,
+                        collab_weight=0.6,
+                        selected_product_id=st.session_state.selected_product if st.session_state.selected_product is not None else None
+                    )
+                else:
+                    # EXISTING USER: Use hybrid approach
+                    recommendations = hybrid_rec.generate_recommendations(
+                        skin_data['user_id'], 
+                        skin_data['num_products'],
+                        content_weight=0.4,
+                        collab_weight=0.6
+                    )
+
                 # 显示推荐结果
                 if recommendations:
                     for i, (product_id, rating, match_percent) in enumerate(recommendations, 1):
                         product_info = products_df[products_df['product_id'].astype(str) == product_id]
                         if not product_info.empty:
                             product_info = product_info.iloc[0]
-                            display_recommendation(i, product_info, rating, match_percent)
+                            display_recommendation(i, product_info, rating, match_percent, 
+                                                 skin_data['user_id'], hybrid_rec)
                 else:
                     st.warning("No recommendations found. Try adjusting your skin profile.")
                     
             except Exception as e:
                 st.error(f"Error generating recommendations: {e}")
-                # 回退到不使用皮肤过滤
-                recommendations = hybrid_rec.generate_recommendations(
-                    skin_data['user_id'], 
-                    skin_data['num_products']
-                )
-    elif model_type == 'content' and content_rec:
-        with st.spinner("🔍 Finding products that match your skin needs..."):
-            recommendations = content_rec.get_recommendations(
-                skin_data['user_id'],
-                skin_data['skin_type'],
-                skin_data['concerns'],
-                skin_data['budget'],
-                skin_data['num_products']
-            )
-            
-            for i, rec in enumerate(recommendations, 1):
-                display_recommendation(i, rec, rec['rating'], rec['match_percent'])
-    
-    elif model_type == 'collab' and collab_rec:
-        with st.spinner("🔍 Discovering community favorites for your skin type..."):
-            recommendations = collab_rec.get_recommendations(
-                skin_data['user_id'],
-                skin_data['num_products']
-            )
-            
-            for i, rec in enumerate(recommendations, 1):
-                product_info = products_df[products_df['product_id'].astype(str) == rec['product_id']]
-                if not product_info.empty:
-                    product_info = product_info.iloc[0].to_dict()
-                    product_info.update(rec)
-                    display_recommendation(i, product_info, rec['rating'], rec['match_percent'])
+                # Fallback to basic recommendations
+                try:
+                    recommendations = hybrid_rec.generate_recommendations(
+                        skin_data['user_id'], 
+                        skin_data['num_products']
+                    )
+                except Exception as fallback_error:
+                    st.error(f"Fallback also failed: {fallback_error}")
+                    recommendations = []
     
     # 行动按钮
     col1, col2 = st.columns(2)
@@ -373,6 +464,81 @@ elif st.session_state.current_page == 'recommendations':
             st.session_state.current_page = 'home'
             st.session_state.selected_product = None
             st.session_state.skin_data = {}
+            st.rerun()
+elif st.session_state.current_page == "product_detail":
+    # Check if we're viewing a recommended product or the original selected product
+    if 'viewing_product' in st.session_state and st.session_state.viewing_product is not None:
+        display_product_id = st.session_state.viewing_product
+        # Clear viewing_product so it doesn't interfere with normal flow
+        is_viewing_recommended = True
+    else:
+        display_product_id = st.session_state.selected_product
+        is_viewing_recommended = False
+    
+    if display_product_id is not None:
+        # Get the product ID (handle both string and pandas Series)
+        if hasattr(display_product_id, 'item'):
+            product_id = display_product_id.item()
+        else:
+            product_id = str(display_product_id)
+        
+        # Find the full product information
+        product_info = products_df[products_df['product_id'] == product_id]
+        if not product_info.empty:
+            product = product_info.iloc[0].to_dict()
+            
+            # Show different header if viewing recommended product
+            if is_viewing_recommended:
+                st.header(f"📋 {product.get('product_name', '-')}")
+                st.info("🔍 You're viewing details of a recommended product")
+            else:
+                st.header(product.get("product_name", "-"))
+            
+            st.subheader(f"by {product.get('brand_name', '-')}")
+
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.write(f"**Product ID:** {product.get('product_id', '-')}")
+                st.write(f"**Brand:** {product.get('brand_name', '-')}")
+                st.write(f"**Category:** {product.get('tertiary_category', '-')}")
+                st.write(f"**Size:** {product.get('size', '-')}")
+                st.write(f"**Price:** ${product.get('price_usd', '-')}")
+                
+                # --- Highlights ---
+                highlights = product.get("highlights", None)
+                if highlights and str(highlights).lower() != "nan":
+                    st.markdown("### ✨ Highlights")
+                    st.markdown(f"- {highlights.replace(';', '<br>- ')}", unsafe_allow_html=True)
+                else:
+                    st.markdown("### ✨ Highlights")
+                    st.write("-")
+
+                # --- Ingredients ---
+                ingredients = product.get("ingredients", None)
+                st.markdown("### 🧴 Ingredients")
+                if ingredients and str(ingredients).lower() != "nan":
+                    try:
+                        import ast
+                        if isinstance(ingredients, str) and ingredients.startswith("["):
+                            ing_list = ast.literal_eval(ingredients)
+                            ing_list = [i.strip() for i in ing_list if i.strip()]
+                        else:
+                            ing_list = [ingredients]
+                    except Exception:
+                        ing_list = [ingredients]
+                    for ing in ing_list:
+                        st.markdown(f"- {ing}")
+                else:
+                    st.write("-")
+        else:
+            st.error("Product not found!")
+
+        st.divider()
+        if st.button("← Back to Recommendations"):
+            # Clear viewing_product when going back to recommendations
+            if 'viewing_product' in st.session_state:
+                del st.session_state.viewing_product
+            st.session_state.current_page = "recommendations"
             st.rerun()
 
 elif st.session_state.current_page == 'about':
