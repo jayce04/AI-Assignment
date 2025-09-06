@@ -48,14 +48,16 @@ def display_recommendation(index, product, rating, match_percent, user_id=None, 
                         compat = debug_info.get('compatibility', {})
                         st.write(f"**Skin Type:** {compat.get('skin_type_status', 'N/A')}")
                         st.write(f"**Concerns:** {compat.get('concern_status', 'N/A')}")
-                        st.write(f"**Budget:** {compat.get('budget_status', 'N/A')}")
-                        st.write(f"**Compatibility Score:** {compat.get('final_multiplier', 'N/A')}")
+                        st.write(f"**Budget:** {'Within budget' if debug_info.get('price', 0) else 'N/A'}")
+                        compatibility_score = debug_info.get('compatibility_score', 0)
+                        if isinstance(compatibility_score, (int, float)):
+                            st.write(f"**Compatibility Score:** {compatibility_score:.2f}")
+                        else:
+                            st.write(f"**Compatibility Score:** N/A")
                         
-                        prod_info = debug_info.get('product_info', {})
-                        if prod_info.get('detected_skin_types'):
-                            st.write(f"**Product targets:** {', '.join(prod_info['detected_skin_types'])} skin")
-                        if prod_info.get('detected_concerns'):
-                            st.write(f"**Product addresses:** {', '.join(prod_info['detected_concerns'])}")
+                        # Show what the product addresses
+                        if debug_info.get('product_addresses'):
+                            st.write(f"**Product addresses:** {', '.join(debug_info['product_addresses'])}")
                 except Exception as e:
                     pass  # Skip debug info if there's an error
         
@@ -438,6 +440,20 @@ elif st.session_state.current_page == 'recommendations':
                             product_info = product_info.iloc[0]
                             display_recommendation(i, product_info, rating, match_percent, 
                                                  skin_data['user_id'], hybrid_rec)
+                    
+                    # Check for ingredient conflicts
+                    try:
+                        conflicts = hybrid_rec.check_ingredient_conflicts(recommendations)
+                        if conflicts['has_conflicts']:
+                            st.warning("⚠️ **Ingredient Conflicts Detected**")
+                            with st.expander("View potential conflicts", expanded=False):
+                                for conflict in conflicts['conflicts']:
+                                    st.write(f"**{conflict['ingredient1'].title()}** may conflict with **{conflict['ingredient2'].title()}**")
+                                    st.write(f"💡 {conflict['warning']}")
+                                    st.write("---")
+                    except:
+                        pass  # Skip conflict checking if there's an error
+                        
                 else:
                     st.warning("No recommendations found. Try adjusting your skin profile.")
                     
