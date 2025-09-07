@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from utils.recommender import EnhancedHybridRecommender, CollaborativeRecommender
+from recommender import EnhancedHybridRecommender, CollaborativeRecommender
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import plotly.express as px
