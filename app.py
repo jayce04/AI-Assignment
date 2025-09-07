@@ -82,13 +82,20 @@ def build_vectorizer_and_matrix(product_text: pd.Series):
 
 vectorizer, tfidf_matrix = build_vectorizer_and_matrix(content_df["product_content"])
 
+# NEW:
+name_to_idx = {
+    str(s).strip().lower(): i
+    for i, s in enumerate(content_df["product_name"].fillna(""))
+}
+
 def contentbased_recommender(
     product_type=None,
     skin_type=None,
     skin_concern=None,
     concern_match="all",
     max_price=None,
-    n=10
+    n=10,
+    query_product=None  # NEW
 ):
     def _to_set(x):
         if x is None or (isinstance(x, float) and pd.isna(x)):
@@ -101,19 +108,32 @@ def contentbased_recommender(
     req_skin = str(skin_type).strip().lower() if skin_type else None
     req_concern = _to_set(skin_concern)
 
-    tokens = []
-    if req_type: tokens.append(req_type)
-    if req_skin: tokens.append(req_skin)
-    if req_concern: tokens.extend(sorted(req_concern))
-    profile_text = " ".join(tokens).strip() or "skincare"
+    # -------- similarity vector --------
+    sims = None
+    if query_product:
+        key = str(query_product).strip().lower()
+        if key in name_to_idx:
+            qidx = name_to_idx[key]
+            sims = cosine_similarity(tfidf_matrix[qidx:qidx+1], tfidf_matrix).ravel()
+        else:
+            # fallback: no query available -> treat as 0 similarity
+            sims = np.zeros(len(content_df), dtype=float)
+    else:
+        # no query -> use profile text like before (keeps current behavior)
+        tokens = []
+        if req_type: tokens.append(req_type)
+        if req_skin: tokens.append(req_skin)
+        if req_concern: tokens.extend(sorted(req_concern))
+        profile_text = " ".join(tokens).strip() or "skincare"
+        qv = vectorizer.transform([profile_text])
+        sims = cosine_similarity(qv, tfidf_matrix).ravel()
 
-    qv = vectorizer.transform([profile_text])
-    sims = cosine_similarity(qv, tfidf_matrix).ravel()
-
-    price_col = pd.to_numeric(content_df.get("price_usd", np.nan), errors="coerce")
-    rating_col = pd.to_numeric(content_df.get("rating", np.nan), errors="coerce").fillna(0.0)
+    # -------- columns --------
+    price_col   = pd.to_numeric(content_df.get("price_usd", np.nan), errors="coerce")
+    rating_col  = pd.to_numeric(content_df.get("rating", np.nan), errors="coerce").fillna(0.0)
     reviews_col = pd.to_numeric(content_df.get("reviews", 0), errors="coerce").fillna(0).astype(int)
 
+    # -------- filtering --------
     rows = []
     for i, sim in enumerate(sims):
         row = content_df.iloc[i]
@@ -122,7 +142,7 @@ def contentbased_recommender(
             continue
 
         row_skin = str(row.get("skin_type", "")).strip().lower()
-        if req_skin and row_skin and row_skin != req_skin:
+        if req_skin and row_skin and req_skin not in {t.strip() for t in row_skin.split(",") if t.strip()}:
             continue
 
         row_concern = _to_set(row.get("skin_concern", ""))
@@ -138,17 +158,22 @@ def contentbased_recommender(
         if max_price is not None and (pd.isna(p) or p > float(max_price)):
             continue
 
+        # skip the same item if user picked a query product
+        if query_product:
+            if str(row.get("product_name", "")).strip().lower() == str(query_product).strip().lower():
+                continue
+
         rows.append({
-            "product_id": str(row.get("product_id", "")),
+            "product_id":   str(row.get("product_id", "")),
             "product_name": row.get("product_name", ""),
-            "brand_name": row.get("brand_name", ""),
+            "brand_name":   row.get("brand_name", ""),
             "product_type": row.get("product_type", ""),
-            "skin_type": row.get("skin_type", ""),
+            "skin_type":    row.get("skin_type", ""),
             "skin_concern": row.get("skin_concern", ""),
-            "price_usd": row.get("price_usd", ""),
-            "rating": rating_col.iat[i],
-            "reviews": reviews_col.iat[i],
-            "similarity": float(sim)
+            "price_usd":    row.get("price_usd", ""),
+            "rating":       rating_col.iat[i],
+            "reviews":      reviews_col.iat[i],
+            "similarity":   float(sim)
         })
 
     out = pd.DataFrame(rows)
@@ -465,6 +490,8 @@ elif st.session_state.current_page == 'skin_analysis':
                                 ["", "Under $25", "$25-$50", "$50-$100", "Over $100"],
                                 help="Your preferred price range")
         
+        # (Anchor product picker is handled in the Content-Based form below)
+
         concerns = st.multiselect(
             "Main Skin Concerns",
             ["Acne", "Redness", "Dehydration", "Aging", "Pigmentation", "Sensitivity", "Dullness", "Large pores"],
@@ -521,7 +548,7 @@ elif st.session_state.current_page == 'input_form':
                     product_type = st.selectbox("Product Type", ["(any)"] + sorted(content_df['product_type'].unique()),
                                                help="Select a product category (optional)")
                 with col2:
-                    budget = st.selectbox("Budget Preference", ["(any)", "Under $25", "Under $50", "Under $100", "No budget limit"],
+                    budget = st.selectbox("Budget Preference", ["(any)", "Under $25", "Under $50", "Under $100", "Under $200"],
                                         help="Your preferred price range")
                 
                 concerns = st.multiselect(
@@ -531,6 +558,14 @@ elif st.session_state.current_page == 'input_form':
                 )
                 
                 concern_match = st.radio("Concern Match", ["all", "any"], index=1, help="Match all concerns or any concern")
+
+                # NEW: Anchor product picker for Content-Based
+                query_product = st.selectbox(
+                    "Anchor product (optional)",
+                    options=["(none)"] + sorted(content_df["product_name"].dropna().unique().tolist()),
+                    index=0,
+                    help="Pick a product to find similar items."
+                )
             
             num_products = st.slider("Number of Recommendations", 1, 50, 5,
                                    help="How many products would you like to see?")
@@ -555,7 +590,8 @@ elif st.session_state.current_page == 'input_form':
                         'budget': None if budget == "(any)" else budget,
                         'num_products': num_products,
                         'product_type': None if product_type == "(any)" else product_type,
-                        'concern_match': concern_match
+                        'concern_match': concern_match,
+                        'query_product': None if query_product == "(none)" else query_product  # NEW
                     }
                 st.session_state.current_page = 'recommendations'
                 st.rerun()
@@ -635,7 +671,6 @@ elif st.session_state.current_page == 'recommendations':
     if model_type == 'hybrid':
         st.write("🎯 Higher concern score = Better for your specific skin issues  ⭐ Higher rating = More customers loved this product  💰 All prices are within your budget")
     st.write("")
-    st.write("")
 
     recommendations = []
     recommendations_df = None  # To store DataFrame for CSV download
@@ -699,8 +734,8 @@ elif st.session_state.current_page == 'recommendations':
                     max_price = 50
                 elif skin_data['budget'] == "Under $100":
                     max_price = 100
-                elif skin_data['budget'] == "No budget limit":
-                    max_price = float("inf")
+                elif skin_data['budget'] == "Under $200":
+                    max_price = 200
                 
                 recommendations = contentbased_recommender(
                     product_type=skin_data.get('product_type'),
@@ -708,8 +743,10 @@ elif st.session_state.current_page == 'recommendations':
                     skin_concern=skin_data.get('concerns'),
                     concern_match=skin_data.get('concern_match', 'any'),
                     max_price=max_price,
-                    n=skin_data['num_products']
+                    n=skin_data['num_products'],
+                    query_product=skin_data.get('query_product')   # already wired
                 )
+
                 recommendations_df = recommendations  # Already a DataFrame
                 if recommendations.empty:
                     st.warning("No recommendations found. Try selecting fewer concerns, choosing 'any' for concern match, or leaving product type, skin type, and budget as '(any)'.")
