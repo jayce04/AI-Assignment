@@ -1581,7 +1581,7 @@ class ContentBasedRecommender:
     def get_recommendations(self, user_id: str, skin_type: str, concerns: list,
                         budget: str, top_n: int = 5, product_type: str = None,
                         concern_match: str = "all") -> pd.DataFrame:
-        print(f"Input: user_id={user_id}, skin_type={skin_type}, concerns={concerns}, budget={budget}, product_type={product_type}, concern_match={concern_match}")
+        # print(f"Input: user_id={user_id}, skin_type={skin_type}, concerns={concerns}, budget={budget}, product_type={product_type}, concern_match={concern_match}")
         
         max_price = None
         if budget == "Under $25":
@@ -1692,7 +1692,7 @@ class ContentBasedRecommender:
 
 # -------------------------------------- CHANG KAR YAN ---------------------------------------
 class CollaborativeRecommender:
-    def __init__(self, train_path="collaborative_training_data.csv"):
+    def __init__(self, train_path="data/CleanedDataSet/collaborative_training_data.csv"):
         self.train_path = train_path
         self.model = None
         self.trainset = None
@@ -1752,22 +1752,22 @@ class CollaborativeRecommender:
    
     def _load_model(self):
         """Load SVD model and trainset"""
-        model_files = ['svd_model.pkl', 'trainset.pkl']
+        model_files = ['models/svd_model.pkl', 'models/trainset.pkl']
         missing_files = [f for f in model_files if not os.path.exists(f)]
         
         if missing_files:
             raise FileNotFoundError(f"Model files not found: {missing_files}")
         
-        with open('svd_model.pkl', 'rb') as f:
+        with open('models/svd_model.pkl', 'rb') as f:
             self.model = pickle.load(f)
         
-        with open('trainset.pkl', 'rb') as f:
+        with open('models/trainset.pkl', 'rb') as f:
             self.trainset = pickle.load(f)
         
         print("Model files loaded successfully")
 
     def get_user_profile_and_recommendations(self, user_id, n=5, filter_by_favorite_brands=False):
-        """Get user profile and recommendations with detailed logging"""
+        """Get user profile and recommendations with unified new user handling"""
         
         if not self.initialized:
             print(f"❌ Recommender not initialized: {self.error_message}")
@@ -1776,15 +1776,18 @@ class CollaborativeRecommender:
         print(f"🔍 Getting recommendations for user: {user_id} (type: {type(user_id)})")
         
         try:
-            # Ensure user_id is the right type
-            user_id = str(user_id).strip() if user_id else ""
-            if not user_id:
-                print("❌ Empty user ID provided")
-                return {}, []
+            # Handle None/empty user_id by assigning a default non-existent ID
+            if user_id is None or str(user_id).strip() == "":
+                user_id = "new_user_0"  # Use a clearly non-existent ID
+                print(f"Empty user_id provided, treating as new user: {user_id}")
+            else:
+                user_id = str(user_id).strip()
+            
+            print(f"Processing user_id: '{user_id}'")
             
             # Convert to numeric if needed (check your data format)
+            original_user_id = user_id
             try:
-                # Try to convert to int first (in case your user_ids are stored as integers)
                 numeric_user_id = int(user_id)
                 # Check if this numeric version exists in the data
                 if numeric_user_id in self.df['author_id'].values:
@@ -1795,23 +1798,20 @@ class CollaborativeRecommender:
             except ValueError:
                 print(f"User ID is not numeric, using as string: '{user_id}'")
             
-            # Check user existence
+            # UNIFIED LOGIC: Check user existence (works for both blank and wrong IDs)
             user_data = self.df[self.df['author_id'] == user_id]
             is_new_user = len(user_data) == 0
             
             print(f"User search result: {len(user_data)} records found")
+            print(f"Is new user: {is_new_user}")
+            
             if len(user_data) > 0:
                 print(f"Sample user data: {user_data.head(2).to_dict('records')}")
             
-            # Generate profile
+            # UNIFIED RECOMMENDATION LOGIC
             if is_new_user:
-                print("Generating profile for new user")
-                profile = {
-                    'total_reviews': 0,
-                    'avg_rating': 0.0,
-                    'skin_type': "Unknown",
-                    'favorite_brands': []
-                }
+                print(f"User '{original_user_id}' not found in database - treating as new user")
+                profile = None  # Return None for new users (matches your app.py expectations)
                 print("Getting popular recommendations for new user...")
                 recommendations = self._get_popular_recommendations(n)
             else:
@@ -1825,13 +1825,14 @@ class CollaborativeRecommender:
                 print("Getting personalized recommendations...")
                 recommendations = self._get_personalized_recommendations(user_id, n)
             
-            print(f"Final results: Profile keys: {list(profile.keys())}, Recommendations count: {len(recommendations)}")
+            print(f"Final results: Profile: {profile is not None}, Recommendations count: {len(recommendations)}")
             return profile, recommendations
             
         except Exception as e:
             print(f"❌ Error in get_user_profile_and_recommendations: {str(e)}")
             traceback.print_exc()
-            return {}, []
+            # Return popular recommendations as fallback
+            return None, self._get_popular_recommendations(n)
 
     def _get_popular_recommendations(self, n):
         """Get popular recommendations for new users"""
@@ -1977,3 +1978,4 @@ class CollaborativeRecommender:
             })
         
         return info
+    
