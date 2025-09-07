@@ -521,7 +521,7 @@ elif st.session_state.current_page == 'input_form':
                     product_type = st.selectbox("Product Type", ["(any)"] + sorted(content_df['product_type'].unique()),
                                                help="Select a product category (optional)")
                 with col2:
-                    budget = st.selectbox("Budget Preference", ["(any)", "Under $25", "$25-$50", "$50-$100", "Over $100", "No budget limit"],
+                    budget = st.selectbox("Budget Preference", ["(any)", "Under $25", "Under $50", "Under $100", "No budget limit"],
                                         help="Your preferred price range")
                 
                 concerns = st.multiselect(
@@ -632,7 +632,9 @@ elif st.session_state.current_page == 'recommendations':
                     st.write(f"**User Type:** 🎯 Experienced User - {user_rating_count} ratings")
 
     st.subheader("Recommended For You")
-    st.write("🎯 Higher concern score = Better for your specific skin issues  ⭐ Higher rating = More customers loved this product  💰 All prices are within your budget")
+    if model_type == 'hybrid':
+        st.write("🎯 Higher concern score = Better for your specific skin issues  ⭐ Higher rating = More customers loved this product  💰 All prices are within your budget")
+    st.write("")
     st.write("")
 
     recommendations = []
@@ -693,12 +695,10 @@ elif st.session_state.current_page == 'recommendations':
                 max_price = None
                 if skin_data['budget'] == "Under $25":
                     max_price = 25
-                elif skin_data['budget'] == "$25-$50":
+                elif skin_data['budget'] == "Under $50":
                     max_price = 50
-                elif skin_data['budget'] == "$50-$100":
+                elif skin_data['budget'] == "Under $100":
                     max_price = 100
-                elif skin_data['budget'] == "Over $100":
-                    max_price = float("inf")
                 elif skin_data['budget'] == "No budget limit":
                     max_price = float("inf")
                 

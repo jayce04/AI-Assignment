@@ -16,6 +16,14 @@ import traceback
 import os
 
 warnings.filterwarnings('ignore')
+import numpy as np
+import pandas as pd
+import joblib
+from typing import Dict, List, Tuple
+from surprise import dump
+from sklearn.metrics.pairwise import cosine_similarity
+import re
+import warnings
 warnings.filterwarnings('ignore')
 #-------------------------------------------TAN YEN FANG ----------------------------------------------------
 """
@@ -102,6 +110,7 @@ class EnhancedHybridRecommender:
         self._load_models()
         self._preload_data()
 
+    # ----------------- LOAD MODELS & DATA -----------------
     def _load_models(self) -> None:
         """Load pre-trained models and embeddings for recommendation calculations"""
         # Load product data and embeddings for content-based filtering
@@ -636,16 +645,15 @@ class EnhancedHybridRecommender:
         # Get product using the same method as filter_by_skin_profile
         product = self.prod_df[self.prod_df["product_id"].astype(str) == str(product_id)].iloc[0]
         
-        # Use the SAME text processing as filter_by_skin_profile
-        if 'combined_features' in self.prod_df.columns and pd.notna(product.get("combined_features")):
+        # Always build product_text from available fields if combined_features is missing or empty
+        product_text = ""
+        if 'combined_features' in self.prod_df.columns and pd.notna(product.get("combined_features")) and str(product.get("combined_features", "")).strip():
             product_text = str(product.get("combined_features", ""))
         else:
-            # Fallback to manual construction (same as filter_by_skin_profile)
             product_text = " ".join(map(str, [
                 product.get("product_name", ""),
                 product.get("highlights", ""),
                 product.get("ingredients", ""),
-                product.get("combined_features", ""),
                 product.get("claims", "")
             ]))
         
@@ -656,7 +664,7 @@ class EnhancedHybridRecommender:
         normalized_user_concerns = self._normalize_user_input(user_concerns)
         
         # Use the SAME semantic concern matching as filter_by_skin_profile
-        semantic_concern_score = self._calculate_semantic_concern_match(normalized_user_concerns, product_text, product_id)
+        semantic_concern_score, semantic_matched_concerns = self._calculate_semantic_concern_match(normalized_user_concerns, product_text, product_id)
         
         # Use the SAME keyword matching logic as filter_by_skin_profile - but with normalized concerns
         keyword_matches = len([c for c in normalized_user_concerns if c in matched_concerns])
@@ -991,18 +999,21 @@ class EnhancedHybridRecommender:
         # Get product information and create searchable text
         product = self.prod_df[self.prod_df["product_id"].astype(str) == str(product_id)].iloc[0]
         
-        # Use pre-processed combined features if available, otherwise build manually
-        if 'combined_features' in self.prod_df.columns and pd.notna(product.get("combined_features")):
+        # Always build product_text from available fields if combined_features is missing or empty
+        product_text = ""
+        if 'combined_features' in self.prod_df.columns and pd.notna(product.get("combined_features")) and str(product.get("combined_features", "")).strip():
             product_text = str(product.get("combined_features", ""))
         else:
-            # Combine all product text fields for comprehensive analysis
             product_text = " ".join(map(str, [
                 product.get("product_name", ""),
-                product.get("highlights", ""),      # Often contains "Best for Dry, Combo, Normal Skin"
-                product.get("ingredients", ""),     # Ingredient list for concern matching
-                product.get("combined_features", ""),  # Additional features
-                product.get("claims", "")           # Product claims and benefits
+                product.get("highlights", ""),
+                product.get("ingredients", ""),
+                product.get("claims", "")
             ]))
+        # Fallback: skip product if product_text is empty
+        if not product_text.strip():
+            print(f"[WARNING] Skipping product_id={product.get('product_id', 'UNKNOWN')} due to empty product text.")
+            return 0.0
         
         price = product.get("price_usd", 0)
 
@@ -1010,7 +1021,7 @@ class EnhancedHybridRecommender:
         matched_types, matched_concerns = self._extract_skin_tags(product_text)
         
         # Calculate semantic similarity for advanced concern matching
-        semantic_concern_score = self._calculate_semantic_concern_match(
+        semantic_concern_score, semantic_matched_concerns = self._calculate_semantic_concern_match(
             normalized_user_concerns, product_text, product_id
         )
 
@@ -1053,44 +1064,17 @@ class EnhancedHybridRecommender:
 
         return max(0.3, min(multiplier, 2.0))  # Honest maximum
 
-    def _calculate_semantic_concern_match(self, user_concerns: List[str], product_text: str, product_id: str) -> float:
+    def _calculate_semantic_concern_match(self, user_concerns: List[str], product_text: str, product_id: str) -> tuple:
         """
         Advanced semantic matching between user concerns and product ingredients/descriptions
-        
-        This method goes beyond simple keyword matching to understand the relationship
-        between skin concerns and the ingredients/technologies that address them.
-        
-        SEMANTIC INTELLIGENCE:
-        - Maps each concern to relevant ingredients (e.g., 'acne' → 'salicylic acid', 'niacinamide')  
-        - Considers skin type compatibility (gentle ingredients for sensitive skin)
-        - Accounts for ingredient synergies and combinations
-        - Provides nuanced scoring based on concern complexity
-        
-        EXAMPLE MAPPINGS:
-        - Acne → salicylic acid, benzoyl peroxide, tea tree, zinc, niacinamide
-        - Aging → retinol, peptides, vitamin C, bakuchiol, collagen  
-        - Dryness → hyaluronic acid, ceramides, squalane, glycerin
-        - Hyperpigmentation → vitamin C, arbutin, kojic acid, tranexamic acid
-        
-        Args:
-            user_concerns: List of normalized user skin concerns
-            product_text: Complete product description text to analyze
-            product_id: Product ID for debugging (optional)
-            
-        Returns:
-            Float score 0-1 representing semantic relevance to user's concerns
+        Returns (score, matched_concerns_list)
         """
         if not user_concerns:
-            return 0.0
-        
+            return 0.0, []
         try:
-            # Use centralized concern normalization for consistency
             normalized_concerns = self._normalize_user_input(user_concerns)
-            
-            # CONCERN-TO-INGREDIENT KNOWLEDGE BASE
-            # Maps skin concerns to ingredients/technologies that address them
             concern_ingredient_map = {
-                'acne': ['salicylic acid', 'benzoyl peroxide', 'tea tree', 'zinc', 'bha', 'willow bark', 'sulfur', 
+                'acne': ['salicylic acid', 'benzoyl peroxide', 'tea tree', 'zinc', 'bha', 'willow bark', 'sulfur',
                         'niacinamide', 'azelaic acid', 'adapalene', 'retinoid', 'clay', 'charcoal', 'antibacterial',
                         'antimicrobial', 'anti-acne', 'blemish', 'pore-clearing'],
                 'aging': ['retinol', 'peptide', 'collagen', 'bakuchiol', 'matrixyl', 'coenzyme q10', 'anti-aging',
@@ -1101,39 +1085,31 @@ class EnhancedHybridRecommender:
                            'anti-inflammatory', 'sensitive skin', 'rosacea', 'irritation'],
                 'hyperpigmentation': ['vitamin c', 'arbutin', 'kojic', 'tranexamic', 'azelaic', 'brightening',
                                      'hydroquinone', 'licorice', 'dark spot', 'even tone'],
-                'pores': ['salicylic acid', 'clay', 'charcoal', 'niacinamide', 'bha', 'pore-minimizing', 'refining', 
+                'pores': ['salicylic acid', 'clay', 'charcoal', 'niacinamide', 'bha', 'pore-minimizing', 'refining',
                          'pore-clearing', 'blackhead', 'whitehead'],
                 'oil-control': ['clay', 'charcoal', 'zinc', 'mattifying', 'oil control', 'sebum control', 'shine control'],
                 'dullness': ['vitamin c', 'aha', 'glycolic', 'brightening', 'glow', 'radiance', 'luminous', 'revitalizing'],
                 'texture': ['aha', 'glycolic', 'lactic', 'resurfacing', 'exfoliating', 'smoothing', 'refining']
             }
-            
             text_lower = product_text.lower()
             concern_scores = []
-            
-            # Calculate semantic score for each user concern
+            matched_concerns = []
             for concern in normalized_concerns:
-                # Direct concern match (already handled by keyword matching)
                 direct_score = 0.0
-                
-                # Ingredient-based semantic match with smart combination logic
                 semantic_score = 0.0
                 if concern in concern_ingredient_map:
                     ingredients = concern_ingredient_map[concern]
                     matches = sum(1 for ingredient in ingredients if ingredient in text_lower)
                     if matches > 0:
-                        # Smart ingredient scoring based on skin type compatibility
                         semantic_score = self._calculate_skin_compatible_score(concern, ingredients, text_lower, normalized_concerns)
-                
+                        matched_concerns.append(concern)  # Track which concerns matched
                 total_score = direct_score + semantic_score
                 if total_score > 0:
                     concern_scores.append(min(1.0, total_score))
-            
             final_score = np.mean(concern_scores) if concern_scores else 0.0
-            return final_score
-            
+            return final_score, matched_concerns
         except Exception as e:
-            return 0.0
+            return 0.0, []
 
     def _calculate_skin_compatible_score(self, concern: str, ingredients: list, text_lower: str, user_concerns: list) -> float:
         """Calculate ingredient score based on skin type and concern combinations"""
@@ -1204,95 +1180,6 @@ class EnhancedHybridRecommender:
                 return min(1.0, base_score + (versatile_matches * 0.2))
         
         return min(1.0, base_score)  # Default scoring
-
-    def get_recommendation_debug_info(self, product_id: str, user_id: str) -> dict:
-        """Get detailed information about why a product was recommended."""
-        profile = self.skin_profiles.get(str(user_id))
-        if not profile:
-            return {"error": "No profile found for user"}
-
-        user_type = profile.get("skin_type", "").lower()
-        user_concerns = profile.get("concerns", [])
-        if isinstance(user_concerns, str):
-            user_concerns = [user_concerns]
-        user_concerns = [c.lower() for c in user_concerns]
-        user_budget = profile.get("budget", "")
-
-        product = self.prod_df[self.prod_df["product_id"].astype(str) == str(product_id)].iloc[0]
-        # Use the pre-processed combined_features if available, otherwise construct manually
-        if 'combined_features' in self.prod_df.columns and pd.notna(product.get("combined_features")):
-            product_text = str(product.get("combined_features", ""))
-        else:
-            # Fallback to manual construction
-            product_text = " ".join(map(str, [
-                product.get("product_name", ""),
-                product.get("highlights", ""),  # This contains "Best for Dry, Combo, Normal Skin"
-                product.get("ingredients", ""),
-                product.get("combined_features", ""),  # Keep for compatibility  
-                product.get("claims", "")  # Keep for compatibility
-            ]))
-        price = product.get("price_usd", 0)
-
-        matched_types, matched_concerns = self._extract_skin_tags(product_text)
-        semantic_score = self._calculate_semantic_concern_match(user_concerns, product_text, product_id)
-        
-        # Calculate the same multiplier logic for debugging
-        multiplier = 1.0
-        skin_type_status = "No skin type specified in product"
-        concern_status = "No concerns matched"
-        budget_status = "Within budget" if self._budget_range(user_budget)[0] <= price <= self._budget_range(user_budget)[1] else "Outside budget"
-        
-        if user_type and matched_types:
-            if user_type in matched_types:
-                skin_type_status = f"✅ Perfect match: {user_type} skin"
-                multiplier *= 1.3
-            else:
-                if (user_type == "dry" and "oily" in matched_types) or \
-                   (user_type == "oily" and "dry" in matched_types):
-                    skin_type_status = f"❌ Opposite skin type: Product for {matched_types}, you have {user_type}"
-                    multiplier *= 0.2
-                else:
-                    skin_type_status = f"⚠️ Different skin type: Product for {matched_types}, you have {user_type}"
-                    multiplier *= 0.6
-        elif user_type and not matched_types:
-            skin_type_status = f"⚪ No skin type specified (neutral for {user_type} skin)"
-            
-        # Enhanced concern matching
-        keyword_matches = len([c for c in user_concerns if c in matched_concerns])
-        total_concern_score = keyword_matches + semantic_score
-        
-        concern_details = []
-        if keyword_matches > 0:
-            matched_keywords = [c for c in user_concerns if c in matched_concerns]
-            concern_details.append(f"Keyword matches: {', '.join(matched_keywords)}")
-        if semantic_score > 0:
-            concern_details.append(f"Semantic similarity: {semantic_score:.2f}")
-            
-        if total_concern_score > 0:
-            concern_status = f"✅ {total_concern_score:.1f} concern score: {'; '.join(concern_details)}"
-            multiplier *= (1.1 + 0.15 * min(total_concern_score, 3.0))
-        elif user_concerns:
-            concern_status = f"❌ No matches (you: {', '.join(user_concerns)}, product: {', '.join(matched_concerns) if matched_concerns else 'none'})"
-            multiplier *= 0.85
-
-        return {
-            "user_profile": {
-                "skin_type": user_type,
-                "concerns": user_concerns,
-                "budget": user_budget
-            },
-            "product_info": {
-                "detected_skin_types": matched_types,
-                "detected_concerns": matched_concerns,
-                "price": price
-            },
-            "compatibility": {
-                "skin_type_status": skin_type_status,
-                "concern_status": concern_status,
-                "budget_status": budget_status,
-                "final_multiplier": round(max(0.3, min(multiplier, 2.0)), 2)
-            }
-        }
 
     def _extract_skin_tags(self, text: str) -> Tuple[List[str], List[str]]:
         """Extract skin types and concerns using regex patterns (from final.ipynb)"""
@@ -1454,9 +1341,20 @@ class EnhancedHybridRecommender:
             compatibility_score = self.filter_by_skin_profile(product_id, user_id)
             concern_score = self._calculate_accurate_concern_score(product_id, user_id, profile.get('concerns', []))
             
+            # Build product_text the same way as the main recommendation system
+            product_text = ""
+            if 'combined_features' in self.prod_df.columns and pd.notna(product.get("combined_features")) and str(product.get("combined_features", "")).strip():
+                product_text = str(product.get("combined_features", ""))
+            else:
+                product_text = " ".join(map(str, [
+                    product.get("product_name", ""),
+                    product.get("highlights", ""),
+                    product.get("ingredients", ""),
+                    product.get("claims", "")
+                ]))
+            
             # Extract what the product text says about skin types and concerns
-            combined_text = str(product.get('combined_features', ''))
-            matched_types, matched_concerns = self._extract_skin_tags(combined_text)
+            matched_types, matched_concerns = self._extract_skin_tags(product_text)
             
             user_skin_type = profile.get('skin_type', '').lower()
             user_concerns = profile.get('concerns', [])
@@ -1480,7 +1378,7 @@ class EnhancedHybridRecommender:
             
             # Check for direct matches using original concerns
             for concern in user_concerns:
-                if concern.lower() in combined_text.lower():
+                if concern.lower() in product_text.lower():
                     direct_matches.append(concern)
             
             # Check for normalized concern matches 
@@ -1491,17 +1389,27 @@ class EnhancedHybridRecommender:
                     if original_concern not in concern_matches:  # Avoid duplicates
                         concern_matches.append(original_concern)
             
-            # Get semantic matches
-            semantic_score = self._calculate_semantic_concern_match(
-                [c.lower() for c in user_concerns], combined_text, product_id
+            # Get semantic matches using normalized concerns (same as _calculate_accurate_concern_score)
+            semantic_score, semantic_matched_concerns = self._calculate_semantic_concern_match(
+                normalized_user_concerns, product_text, product_id
             )
             
             # Create simplified concern status message with semantic score
             all_matches = list(set(direct_matches + concern_matches))  # Combine and remove duplicates
+            semantic_matches = list(set(semantic_matched_concerns))  # Get semantic matches
             match_text = f"{', '.join(all_matches)}" if all_matches else "none"
             
-            if all_matches:
-                concern_status = f"✅ {concern_score:.1f} concern score: Found {match_text}; Semantic: {semantic_score:.2f}"
+            # Consider semantic matches too - if semantic score > 0, we have ingredient matches
+            has_matches = len(all_matches) > 0 or semantic_score > 0.0
+            
+            if has_matches:
+                if len(all_matches) > 0:
+                    concern_status = f"✅ {concern_score:.1f} concern score: Found {match_text}; Semantic: {semantic_score:.2f}"
+                elif len(semantic_matches) > 0:
+                    semantic_text = ', '.join(semantic_matches)
+                    concern_status = f"✅ {concern_score:.1f} concern score: Concern match {semantic_text}; Semantic: {semantic_score:.2f}"
+                else:
+                    concern_status = f"✅ {concern_score:.1f} concern score: Ingredient matches; Semantic: {semantic_score:.2f}"
             else:
                 concern_status = f"❌ {concern_score:.1f} concern score: No matches found; Semantic: {semantic_score:.2f}"
             
