@@ -1,8 +1,9 @@
-streamlit
-pandas
-numpy
-scikit-learn
-surprise
-plotly
-streamlit-option-menu
-
+streamlit==1.49.1
+pandas==2.3.2
+numpy<2
+scikit-learn==1.7.1
+scipy>=1.8,<1.13
+scikit-surprise==1.1.4
+plotly==6.3.0
+streamlit-option-menu==0.4.0
+cython<3
