@@ -5,3 +5,4 @@ scikit-learn
 surprise
 plotly
 streamlit-option-menu
+
